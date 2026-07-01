@@ -1,0 +1,24 @@
+[project]
+name = "per-model-tuned-bakeoff"
+version = "1.0.0"
+description = "Per-model hyperparameter and feature-count tuning bake-off for rare-outcome prediction"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "matplotlib",
+    "xgboost",
+    "pyyaml",
+    "streamlit>=1.30",
+    "openai>=1.0",
+    "statsmodels>=0.14",
+    "seaborn>=0.13",
+]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

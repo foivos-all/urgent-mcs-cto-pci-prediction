@@ -1,0 +1,63 @@
+data_path: "data/for_score.csv"
+target: "lv_assist2_aae___2"
+output_dir: "output"
+random_state: 42
+test_size: 0.20
+cv_splits: 5
+n_bootstrap_ci: 2000
+cat_max_levels: 20
+k_grid: [15, 25, 50, "all"]
+fast_mode: false
+recode_123_as_yesno_na: true
+top_features:
+  - age_manual_input
+  - bmi
+  - diabetes_mellitus
+  - hypertension
+  - smoking
+  - dyslipidemia
+  - prior_mi
+  - prior_pci
+  - prior_cabg
+  - peripheral_arterial_diseas
+  - cerebrovascular_disease
+  - chronic_lung_disease
+  - left_ventr_ejection_fract
+  - occlusion_length_mm
+  - calcification_med_sev
+
+tripod:
+  deployable_model: "LogReg_Firth"
+  tripod_output_dir: "tripod_outputs"
+  exclude_planned_mcs: true
+  planned_mcs_col: "lv_assist2_aae___1"
+  site_col: "center"
+  year_col: "year_of_procedure"
+  n_boot_optimism: 500
+  pre_specified_predictors:
+    - retro
+    - left_ventr_ejection_fract
+    - occlusion_length_mm
+    - proximal_cap_ambiguity
+    - age_manual_input
+    - acs
+    - calcification_med_sev
+    - peripheral_arterial_diseas
+  plausible_bounds:
+    left_ventr_ejection_fract: [5, 80]
+    occlusion_length_mm: [1, 200]
+    age_manual_input: [18, 110]
+  score_increments:
+    left_ventr_ejection_fract: -10
+    occlusion_length_mm: 10
+    age_manual_input: 10
+  points_max: 10
+  pub_vars:
+    retro: "retro"
+    lvef: "left_ventr_ejection_fract"
+    length: "occlusion_length_mm"
+  pub_pts:
+    retro_yes: 45.0
+    lvef_ref: 80.0
+    lvef_per_pct_below_ref: 1.4
+    length_per_mm: 0.667
