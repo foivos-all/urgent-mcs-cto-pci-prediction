@@ -12,6 +12,13 @@ Full TRIPOD+AI (2024)-compliant pipeline for urgent MCS prediction after CTO-PCI
 
 ## Setup
 
+### Clone the repository
+
+```bash
+git clone https://github.com/foivos-all/urgent-mcs-cto-pci-prediction.git
+cd urgent-mcs-cto-pci-prediction
+```
+
 ### Prerequisites
 
 - Python >= 3.10
