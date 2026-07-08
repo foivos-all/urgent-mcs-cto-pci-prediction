@@ -142,9 +142,6 @@ The deployable pipeline fits plain Firth logistic regression first (for de-biase
 |---|---|
 | `bakeoff_boxplot.png` | CV-AUC boxplot across all 12 bake-off models |
 | `precision_recall_oof.png` | OOF precision-recall curves, all models |
-| `comparison_auc.png` | Bar chart — Firth LR vs tuned models (CV AUC) |
-| `comparison_roc.png` | OOF ROC — Firth LR vs benchmark |
-| `comparison_calibration.png` | Calibration curves — Firth LR vs benchmark |
 | `why_firth_panel.png` | Calibration / ROC / decision-curve panel — top-3 bake-off models + Firth |
 | `firth_k_sweep.png` | OOF AUC vs number of pre-specified predictors (parsimony sweep) |
 | `calibration_curve.png` | Firth LR calibration (10-bin quantile) |

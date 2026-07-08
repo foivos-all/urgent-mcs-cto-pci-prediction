@@ -1104,64 +1104,6 @@ def plot_incidence_by_point_strata(final_lr, ref, X, y, X_train, X_test, outdir,
 
 
 # ===================================================================
-# Comparison plots  (section 5d — top models + Firth)
-# ===================================================================
-
-def _plot_bakeoff_auc(bakeoff_results, firth_auc, plots_dir):
-    order = bakeoff_results.sort_values("cv_auc", ascending=False)["model"].tolist()
-    names = order + ["LogReg_Firth"]
-    cv_vals = list(bakeoff_results.sort_values("cv_auc", ascending=False)["cv_auc"].values) + [firth_auc]
-    xp = np.arange(len(names))
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.bar(xp, cv_vals, 0.6, color="#4da3ff", edgecolor="white")
-    for i, n in enumerate(names):
-        if n == "LogReg_Firth":
-            bars[i].set_color(ACCENT_RED)
-    ax.axhline(0.5, ls=":", color=MID_GREY, lw=1)
-    ax.axhline(0.80, ls="--", color=DARK, lw=1)
-    ax.set_xticks(xp); ax.set_xticklabels(names, rotation=45, ha="right")
-    ax.set_ylabel("CV ROC-AUC")
-    ax.set_title("Model comparison — pre-specified Firth LR vs tuned models")
-    style_axis(ax)
-    fig.tight_layout()
-    fig.savefig(os.path.join(plots_dir, "comparison_auc.png"), dpi=300)
-    plt.close(fig)
-
-
-def _plot_comparison_roc(oof_pred_firth, oof_pred_bench, y_train, bench_name, plots_dir):
-    fig, ax = plt.subplots(figsize=(7, 7))
-    for name, preds in [("LogReg_Firth", oof_pred_firth), (bench_name, oof_pred_bench)]:
-        fpr, tpr, _ = roc_curve(y_train, preds)
-        lw = 2.5 if name == "LogReg_Firth" else 1.5
-        ax.plot(fpr, tpr, lw=lw, label=f"{name} ({roc_auc_score(y_train, preds):.3f})")
-    ax.plot([0, 1], [0, 1], color=MID_GREY, ls="--", lw=1.2)
-    ax.set_xlabel("1 - Specificity"); ax.set_ylabel("Sensitivity")
-    ax.set_title("OOF ROC — Firth vs " + bench_name)
-    ax.legend(fontsize=10, loc="lower right")
-    style_axis(ax)
-    fig.tight_layout()
-    fig.savefig(os.path.join(plots_dir, "comparison_roc.png"), dpi=300)
-    plt.close(fig)
-
-
-def _plot_comparison_calibration(oof_pred_firth, oof_pred_bench, y_train, bench_name, plots_dir):
-    fig, ax = plt.subplots(figsize=(6.5, 6.5))
-    ax.plot([0, 1], [0, 1], "--", lw=1.5, color=MID_GREY, label="ideal")
-    for name, preds in [("LogReg_Firth", oof_pred_firth), (bench_name, oof_pred_bench)]:
-        fp, mp = calibration_curve(y_train, preds, n_bins=10, strategy="quantile")
-        _, slope, brier = _cal_metrics(y_train, preds)
-        lw = 2.5 if name == "LogReg_Firth" else 1.5
-        ax.plot(mp, fp, "o-", lw=lw, label=f"{name} (slope={slope:.2f}, Brier={brier:.4f})")
-    ax.set_xlabel("Predicted probability"); ax.set_ylabel("Observed fraction")
-    ax.set_title("Calibration — Firth vs " + bench_name)
-    ax.legend(fontsize=10, loc="lower right")
-    style_axis(ax)
-    fig.tight_layout()
-    fig.savefig(os.path.join(plots_dir, "comparison_calibration.png"), dpi=300)
-    plt.close(fig)
-
-
-# ===================================================================
 # Main pipeline
 # ===================================================================
 
@@ -1520,15 +1462,7 @@ def run(
         n_dev=len(y_train), events_dev=int(y_train.sum()),
     )
 
-    # ── Comparison plots ──
     dep_oof = oof_pred["LogReg_Firth"]
-    bench_oof = oof_pred[bench]
-    _plot_bakeoff_auc(
-        bakeoff_results[bakeoff_results["model"] != "LogReg_Firth"],
-        dep_cv_auc, plots_dir,
-    )
-    _plot_comparison_roc(dep_oof, bench_oof, y_train, bench, plots_dir)
-    _plot_comparison_calibration(dep_oof, bench_oof, y_train, bench, plots_dir)
 
     # ── 7. Calibration ──
     print("=" * 60)
