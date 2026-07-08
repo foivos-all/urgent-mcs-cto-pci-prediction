@@ -57,8 +57,6 @@ Edit `config.yaml` in the project root. Top-level keys control the full pipeline
 | `n_repeated_cv` | `20` | Repeats for the repeated-CV discrimination check (Section 6 only — the 12-model bake-off itself is tuned with a single, non-repeated `cv_splits`-fold split) |
 | `cat_max_levels` | `20` | Max levels for categorical detection |
 | `fast_mode` | `false` | Skip SVM/MLP, reduce bootstraps |
-| `yesno_na_vars` | _(10 vars)_ | Columns with 1=yes/2=no/3=NA coding |
-| `redundant_groups` | _(5 groups)_ | Collinear groups for redundancy reduction |
 
 ### `tripod:` section
 
@@ -117,7 +115,7 @@ uv run python -m bakeoff.main --config /path/to/config.yaml
 | 2 | 7 | Variable typing (binary / categorical / continuous) | `variable_typing.csv` |
 | 2b | 20 | Table 1 — participant characteristics by outcome | `table1.csv` |
 | 3 | 9 | Missing data table | `missingness.csv` |
-| 4 | 8 | 80/20 split, redundancy reduction, EPV | Console |
+| 4 | 8 | 80/20 split, EPV | Console |
 | 5a | 12, 13, 15 | Train Firth LR (deployable) + single-pass 12-model bake-off; benchmark selected by out-of-fold AUC | `bakeoff_results.csv`, `precision_recall.csv` |
 | 5b | 12g | Why Firth — discrimination vs calibration for the top-3 bake-off models + Firth | `why_firth_table.csv` |
 | 5c | — | Parsimony sweep — Firth over the pre-specified clinical-priority order | `firth_k_sweep.csv` |
@@ -162,23 +160,11 @@ The deployable pipeline fits plain Firth logistic regression first (for de-biase
 
 | File | Description |
 |---|---|
-| `final_logreg_firth.pkl` | Serialized pipeline (Firth + FLIC + shrinkage) + metadata, incl. `variant`/`shrinkage` (loaded by dashboard) |
+| `final_logreg_firth.pkl` | Serialized pipeline (Firth + FLIC + shrinkage) + metadata, incl. `variant`/`shrinkage` (see Programmatic usage below) |
 | `logreg_firth_specification.csv` | Odds ratios (Firth de-biased), 95% CIs, p-values |
 | `logreg_firth_point_score.csv` | Integer point score per predictor |
 | `logreg_firth_risk_equation.txt` | Plain-text logit + probability equation, using the deployed (FLIC + shrinkage) coefficients |
 | `reduced_model_specification.csv` | Odds ratios for the 6-predictor sensitivity model (Section 14b) |
-
----
-
-## Dashboard (Streamlit)
-
-```bash
-# After running main.py
-uv run streamlit run src/bakeoff/dashboard.py
-```
-
-- 8 pre-specified predictors, auto-imputation, risk score
-- AI explanation via OpenAI (optional, set `OPENAI_API_KEY`)
 
 ---
 

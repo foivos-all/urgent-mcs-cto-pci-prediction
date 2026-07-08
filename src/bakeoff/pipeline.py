@@ -395,33 +395,25 @@ def _classify(s, cat_max):
     return "categorical" if nun < cat_max else "DROPPED"
 
 
-def classify_variables(X0, cat_max=20, yesno_na_vars=None):
-    if yesno_na_vars is None:
-        yesno_na_vars = []
+def classify_variables(X0, cat_max=20):
     binary, categorical, continuous = [], [], []
     X = pd.DataFrame(index=X0.index)
     rows = []
     for c in X0.columns:
         s = X0[c]
-        if c in yesno_na_vars:
-            rec, note = recode_binary(s)
+        t = _classify(s, cat_max)
+        if t == "binary":
+            rec, _ = recode_binary(s)
             X[c] = rec
             binary.append(c)
-            t = "binary"
+        elif t == "continuous":
+            X[c] = pd.to_numeric(s, errors="coerce")
+            continuous.append(c)
+        elif t == "categorical":
+            X[c] = s
+            categorical.append(c)
         else:
-            t = _classify(s, cat_max)
-            if t == "binary":
-                rec, _ = recode_binary(s)
-                X[c] = rec
-                binary.append(c)
-            elif t == "continuous":
-                X[c] = pd.to_numeric(s, errors="coerce")
-                continuous.append(c)
-            elif t == "categorical":
-                X[c] = s
-                categorical.append(c)
-            else:
-                note = "dropped"
+            note = "dropped"
         rows.append({
             "variable": c,
             "type": t,
@@ -488,41 +480,6 @@ def build_prespec_preprocessor(predictors, binary, categorical, continuous):
             ps_cat,
         ))
     return ColumnTransformer(transformers, remainder="drop"), ps_cont, ps_bin, ps_cat
-
-
-# ===================================================================
-# Redundancy reduction
-# ===================================================================
-
-def _uni_auc(x, yv):
-    x = pd.to_numeric(x, errors="coerce")
-    x = x.fillna(x.median())
-    if x.nunique() < 2:
-        return 0.5
-    a = roc_auc_score(yv, x)
-    return max(a, 1 - a)
-
-
-def reduce_redundancy(X_train, X_test, y_train, redundant_groups, pre_specified_predictors):
-    drop = []
-    print("REDUNDANCY REDUCTION (univariate AUC; keep best per group, skip pre-specified):")
-    for grp in redundant_groups:
-        present = [c for c in grp if c in X_train.columns]
-        if len(present) <= 1:
-            if present:
-                print(f"  {grp}: only {present} present — kept")
-            continue
-        scored = sorted(
-            ((_uni_auc(X_train[c], y_train), c) for c in present), reverse=True
-        )
-        dr = [c for _, c in scored[1:] if c not in pre_specified_predictors]
-        drop += dr
-        print(f"  keep {scored[0][1]} | drop {dr}")
-    if drop:
-        for d in [X_train, X_test]:
-            d.drop(columns=drop, inplace=True)
-        print(f"  Dropped {len(drop)} redundant column(s).")
-    return drop
 
 
 # ===================================================================
@@ -646,29 +603,54 @@ def run_bakeoff(X_train, y_train, X_test, y_test, prep_prespec, model_zoo, cv, r
 # 5b. Marginal contribution — leave-one-out
 # ===================================================================
 
-def run_marginal_contribution(X_train, y_train, full_predictors, binary, categorical, continuous, cv, random_state=42, variant="firth"):
-    results_mc = []
-    full_auc = float(roc_auc_score(
-        y_train,
-        cross_val_predict(
-            _firth_pipe(full_predictors, binary, categorical, continuous, variant=variant),
+def run_marginal_contribution(
+    X_train, y_train, full_predictors, binary, categorical, continuous, cv,
+    outdir, plots_dir, random_state=42, variant="firth",
+):
+    """Leave-one-out: drops each pre-specified predictor in turn and reports the change in
+    CV out-of-fold AUC and calibration slope (matches notebook cell 27 / manuscript Figure S5).
+    Descriptive only — does not drive predictor selection."""
+    oof_full = cross_val_predict(
+        _firth_pipe(full_predictors, binary, categorical, continuous, variant=variant),
+        X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1,
+    )[:, 1]
+    auc_full = float(roc_auc_score(y_train, oof_full))
+
+    rows = []
+    for drop in full_predictors:
+        cols = [c for c in full_predictors if c != drop]
+        oofd = cross_val_predict(
+            _firth_pipe(cols, binary, categorical, continuous, variant=variant),
             X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1,
-        )[:, 1],
-    ))
-    results_mc.append({"set": "full", "auc": round(full_auc, 3)})
-
-    for c_exclude in full_predictors:
-        sub = [c for c in full_predictors if c != c_exclude]
-        sub_pipe = _firth_pipe(sub, binary, categorical, continuous, variant=variant)
-        oof = cross_val_predict(
-            sub_pipe, X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1
         )[:, 1]
-        results_mc.append({"set": f"w/o {c_exclude}", "auc": round(roc_auc_score(y_train, oof), 3)})
+        auc_without = float(roc_auc_score(y_train, oofd))
+        rows.append({
+            "dropped": drop,
+            "auc_without": auc_without,
+            "delta_auc": auc_without - auc_full,
+            "cal_slope": float(_cal_slope_only(y_train, oofd)),
+        })
+    loo = pd.DataFrame(rows).sort_values("delta_auc")
+    loo.to_csv(os.path.join(outdir, "firth_leave_one_out.csv"), index=False)
 
-    mc = pd.DataFrame(results_mc)
-    print("\nMARGINAL CONTRIBUTION — leave-one-out Firth LR (train OOF AUC):")
-    print(mc.to_string(index=False))
-    return mc
+    print(f"\nFull {len(full_predictors)}-predictor CV OOF AUC = {auc_full:.3f}")
+    print("Leave-one-out (most negative delta_auc = most important to keep):")
+    print(loo.round(3).to_string(index=False))
+
+    fig, ax = plt.subplots(figsize=(6.8, 4.3))
+    bar_colors = [ACCENT_RED if d < 0 else LIGHT_GREY for d in loo["delta_auc"]]
+    ax.barh(loo["dropped"], loo["delta_auc"], color=bar_colors, edgecolor=DARK, linewidth=0.7)
+    ax.axvline(0, color=MID_GREY, lw=1.2, ls="--")
+    ax.set_xlabel("Change in CV OOF AUC when predictor is removed")
+    ax.set_title("Leave-one-out marginal contribution")
+    ax.invert_yaxis()
+    style_axis(ax)
+    fig.tight_layout()
+    fig.savefig(os.path.join(plots_dir, "firth_loo.png"), dpi=300)
+    plt.close(fig)
+    print("Predictors with delta ~0 / positive AND weak clinical rationale are drop candidates.")
+
+    return loo, auc_full
 
 
 # ===================================================================
@@ -677,44 +659,48 @@ def run_marginal_contribution(X_train, y_train, full_predictors, binary, categor
 
 def evaluate_discrimination(
     X_train, y_train, X_test, y_test, best_estimators, cv, random_state=42,
-    n_boot_ci=2000, n_repeated_cv=20,
+    n_boot_ci=2000, n_repeated_cv=20, recommended_model="LogReg_Firth",
 ):
+    """OOF predictions are pooled (single-pass cv) for every carried model — needed downstream
+    for DeLong and the comparison plots. The repeated-CV diagnostic (rep_cv_auc/rep_cv_sd) is
+    reported for the deployable model only, matching the notebook (Section 6 hardcodes
+    dep="LogReg_Firth" rather than looping over all carried models)."""
     oof_pred = {}
-    disc_rows = []
+    for name, bestm in best_estimators.items():
+        oof_pred[name] = cross_val_predict(
+            clone(bestm), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1
+        )[:, 1]
+
+    dep = recommended_model
+    bestm = best_estimators[dep]
+    oof = oof_pred[dep]
+    lo, hi = _boot_ci(y_train.values, oof, n=n_boot_ci, seed=random_state)
     rep = RepeatedStratifiedKFold(
         n_splits=cv.n_splits, n_repeats=n_repeated_cv, random_state=random_state
     )
-    for name, bestm in best_estimators.items():
-        oof = cross_val_predict(
-            clone(bestm), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1
-        )[:, 1]
-        oof_pred[name] = oof
-        lo, hi = _boot_ci(y_train.values, oof, n=n_boot_ci, seed=random_state)
-        ra = []
-        for tr, te in rep.split(X_train, y_train):
-            if y_train.iloc[te].nunique() < 2:
-                continue
-            ra.append(roc_auc_score(
-                y_train.iloc[te],
-                clone(bestm).fit(X_train.iloc[tr], y_train.iloc[tr]).predict_proba(X_train.iloc[te])[:, 1],
-            ))
-        tp = bestm.predict_proba(X_test)[:, 1]
-        tlo, thi = _boot_ci(y_test.values, tp, n=n_boot_ci, seed=random_state)
-        disc_rows.append({
-            "model": name,
-            "oof_auc": round(float(roc_auc_score(y_train, oof)), 3),
-            "oof_lo": round(float(lo), 3),
-            "oof_hi": round(float(hi), 3),
-            "oof_pr_auc": round(float(average_precision_score(y_train, oof)), 3),
-            "rep_cv_auc": round(float(np.mean(ra)), 3) if ra else np.nan,
-            "rep_cv_sd": round(float(np.std(ra)), 3) if ra else np.nan,
-            "test_auc": round(float(roc_auc_score(y_test, tp)), 3),
-            "test_lo": round(float(tlo), 3),
-            "test_hi": round(float(thi), 3),
-        })
-        print(f"  {name:20s} OOF={roc_auc_score(y_train, oof):.3f} ({lo:.3f}-{hi:.3f})  "
-              f"repCV={np.mean(ra):.3f}  test={roc_auc_score(y_test, tp):.3f}")
-    disc = pd.DataFrame(disc_rows)
+    ra = []
+    for tr, te in rep.split(X_train, y_train):
+        if y_train.iloc[te].nunique() < 2:
+            continue
+        ra.append(roc_auc_score(
+            y_train.iloc[te],
+            clone(bestm).fit(X_train.iloc[tr], y_train.iloc[tr]).predict_proba(X_train.iloc[te])[:, 1],
+        ))
+    tp = bestm.predict_proba(X_test)[:, 1]
+    tlo, thi = _boot_ci(y_test.values, tp, n=n_boot_ci, seed=random_state)
+    disc = pd.DataFrame([{
+        "model": dep,
+        "oof_auc": round(float(roc_auc_score(y_train, oof)), 3),
+        "oof_lo": round(float(lo), 3),
+        "oof_hi": round(float(hi), 3),
+        "oof_pr_auc": round(float(average_precision_score(y_train, oof)), 3),
+        "rep_cv_auc": round(float(np.mean(ra)), 3) if ra else np.nan,
+        "rep_cv_sd": round(float(np.std(ra)), 3) if ra else np.nan,
+        "test_auc": round(float(roc_auc_score(y_test, tp)), 3),
+        "test_lo": round(float(tlo), 3),
+        "test_hi": round(float(thi), 3),
+    }])
+    print(f"DISCRIMINATION — deployable ({dep}), OOF (primary) & held-out test (confirmatory):")
     print(disc.round(3).to_string(index=False))
     return disc, oof_pred
 
@@ -1199,8 +1185,6 @@ def run(
     fast_mode=False,
     score_increments=None,
     points_max=10,
-    yesno_na_vars=None,
-    redundant_groups=None,
     pub_vars=None,
     pub_pts=None,
     published_betas=None,
@@ -1208,10 +1192,6 @@ def run(
     benchmark_model="ExtraTrees",
     use_synth_if_missing=True,
 ):
-    if yesno_na_vars is None:
-        yesno_na_vars = []
-    if redundant_groups is None:
-        redundant_groups = []
     if score_increments is None:
         score_increments = {}
     if pub_vars is None:
@@ -1253,12 +1233,11 @@ def run(
     print("2. Predictor typing & pre-procedural audit  (item 7)")
     print("=" * 60)
     X, binary, categorical, continuous, typing_df = classify_variables(
-        X0, cat_max=cat_max_levels, yesno_na_vars=yesno_na_vars,
+        X0, cat_max=cat_max_levels,
     )
     typing_df.to_csv(os.path.join(outdir, "variable_typing.csv"), index=False)
 
     # Pre-procedural audit
-    unconfirmed = [c for c in yesno_na_vars if c in X.columns]
     print("Pre-procedural audit: all predictors knowable before procedure.")
 
     # Derivation cohort (exclude planned MCS)
@@ -1284,20 +1263,13 @@ def run(
     print("=" * 60)
     generate_missingness_table(X, outdir)
 
-    # ── 4. Train/test split & redundancy reduction  (item 8) ──
+    # ── 4. Train/test split & EPV ──
     print("=" * 60)
-    print("4. Split & redundancy reduction  (item 8)")
+    print("4. Split  (item 8)")
     print("=" * 60)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, stratify=y, random_state=random_state,
     )
-    reduce_redundancy(X_train, X_test, y_train, redundant_groups, pre_specified_predictors)
-
-    # Update variable lists after dropping
-    for dset in [X_train, X_test]:
-        binary = [c for c in binary if c in dset.columns]
-        categorical = [c for c in categorical if c in dset.columns]
-        continuous = [c for c in continuous if c in dset.columns]
 
     # Build full preprocessor (for bake-off / benchmark)
     prep = build_full_preprocessor(binary, categorical, continuous)
@@ -1522,11 +1494,11 @@ def run(
     print("=" * 60)
     print("5d. Marginal contribution — leave-one-out")
     print("=" * 60)
-    mc = run_marginal_contribution(
+    mc, _mc_full_auc = run_marginal_contribution(
         X_train[ps_present], y_train, ps_present, binary, categorical, continuous, cv,
-        random_state=random_state, variant=deployable_variant,
+        outdir, plots_dir, random_state=random_state, variant=deployable_variant,
     )
-    mc.to_csv(os.path.join(outdir, "marginal_contribution.csv"), index=False)
+    results_dict["firth_loo"] = mc.to_dict(orient="records")
 
     # ── 6. Discrimination ──
     print("=" * 60)
@@ -1759,8 +1731,6 @@ if __name__ == "__main__":
         random_state=cfg.get("random_state", 42),
         score_increments=tripod.get("score_increments", {}),
         points_max=tripod.get("points_max", 10),
-        yesno_na_vars=cfg.get("yesno_na_vars", []),
-        redundant_groups=cfg.get("redundant_groups", []),
         pub_vars=tripod.get("pub_vars", {}),
         pub_pts=tripod.get("pub_pts", {}),
         published_betas=tripod.get("published_betas", None),

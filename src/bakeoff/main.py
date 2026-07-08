@@ -66,8 +66,6 @@ def main():
         fast_mode=args.fast_mode if args.fast_mode is not None else cfg.get("fast_mode", False),
         score_increments=tripod.get("score_increments", {}),
         points_max=tripod.get("points_max", 10),
-        yesno_na_vars=cfg.get("yesno_na_vars", []),
-        redundant_groups=cfg.get("redundant_groups", []),
         pub_vars=tripod.get("pub_vars", {}),
         pub_pts=tripod.get("pub_pts", {}),
         published_betas=tripod.get("published_betas", None),

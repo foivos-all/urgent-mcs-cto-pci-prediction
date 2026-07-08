@@ -10,8 +10,6 @@ dependencies = [
     "matplotlib",
     "xgboost",
     "pyyaml",
-    "streamlit>=1.30",
-    "openai>=1.0",
     "statsmodels>=0.14",
     "seaborn>=0.13",
 ]
