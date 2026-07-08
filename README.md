@@ -63,7 +63,7 @@ Edit `config.yaml` in the project root. Top-level keys control the full pipeline
 | Key | Default | Description |
 |---|---|---|
 | `pre_specified_predictors` | 8 predictors | The pre-specified feature set for the deployable model |
-| `deployable_variant` | `flic` | Firth calibration variant for the deployable pipeline: `firth` \| `flic` \| `flac` |
+| `deployable_variant` | `flic` | Post-hoc calibration applied on top of the Firth fit for deployment: `firth` (no correction) \| `flic` (default — re-estimates only the intercept via ML, keeping the Firth slopes) \| `flac` (augmented-data refit). Firth is always fit first; the odds-ratio table always uses the Firth slopes regardless of this setting |
 | `benchmark_model` | `ExtraTrees` | Which bake-off model to carry forward as the ML benchmark (falls back to the top non-Firth model by OOF AUC if absent) |
 | `use_synth_if_missing` | `true` | Generate a synthetic cohort when `data_path` doesn't exist (dry run only) |
 | `plausible_bounds` | `{lvef: [5,80], length: [1,200], age: [18,110]}` | Physiologic ranges — values outside become NaN |
