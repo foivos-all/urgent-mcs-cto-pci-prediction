@@ -1,7 +1,7 @@
 [project]
-name = "per-model-tuned-bakeoff"
+name = "cto-pci-tripod-model"
 version = "1.0.0"
-description = "Per-model hyperparameter and feature-count tuning bake-off for rare-outcome prediction"
+description = "TRIPOD+AI-compliant Firth logistic regression model for CTO-PCI adverse outcome prediction with model comparison"
 requires-python = ">=3.10"
 dependencies = [
     "numpy",

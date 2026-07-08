@@ -3,21 +3,6 @@ import yaml
 
 _CONFIG = None
 
-YESNO_NA_VARS = [
-    "use_of_acei", "use_of_arb", "use_of_aspirin", "use_of_ezetimibe", "use_of_pcsk9i",
-    "use_of_statins", "ranolazine_yesno", "beta_blockers_yesno", "long_acting_nitr_yesno",
-]
-
-REDUNDANT_GROUPS = [
-    ["calcification_med_sev", "j_cto_calcification_score"],
-    ["lmcto", "target_vessel_overall"],
-    ["j_cto_lesion_length", "occlusion_length_mm"],
-    ["j_cto_tortuosity_score_1_f", "tortuosity_med_sev"],
-    ["left_ventr_ejection_fract", "lvef40", "lvef50", "prior_heart_failure"],
-]
-
-FORCE_TYPES = {}
-
 
 def load_config(config_path=None):
     global _CONFIG

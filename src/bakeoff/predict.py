@@ -1,6 +1,6 @@
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
 
 
 def load_model(model_path="tripod_outputs/final_logreg_firth.pkl"):

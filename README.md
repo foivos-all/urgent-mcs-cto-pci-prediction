@@ -1,9 +1,12 @@
 # Prediction of Urgent Mechanical Circulatory Support During Chronic Total Occlusion Percutaneous Coronary Intervention
 
-Two complementary pipelines for the CTO-PCI adverse outcome prediction project:
+Full TRIPOD+AI (2024)-compliant pipeline for urgent MCS prediction after CTO-PCI. Covers all 27 code-addressable TRIPOD+AI items; reproduces the analyses in the companion notebook.
 
-1. **TRIPOD+AI pipeline** (primary) — Firth logistic regression on 8 pre-specified predictors, with optimism correction, calibration, DCA, point score, and risk equation. This is the **deployable model** used by the dashboard.
-2. **Model bake-off** (secondary) — 11-model discrimination benchmark on 64 features with CV-safe hyperparameter tuning, for internal reporting only.
+**Deployable model**: Firth penalized logistic regression on 8 pre-specified predictors (item 22).
+
+**Benchmark**: Tuned Bernoulli Naive Bayes on the full candidate set with SelectKBest (discrimination only).
+
+**External comparison**: Reconstructed PROGRESS-CTO nomogram (Karacsonyi et al., AJC 2023) plus pairwise DeLong tests.
 
 ---
 
@@ -24,8 +27,6 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-This creates a virtual environment (`.venv`) and installs all dependencies.
-
 ### Prepare data
 
 Place `for_score.csv` in `data/`. The CSV must contain the target `lv_assist2_aae___2` and use Latin-1 encoding.
@@ -34,209 +35,134 @@ Place `for_score.csv` in `data/`. The CSV must contain the target `lv_assist2_aa
 
 ## Configuration
 
-Edit `config.yaml` in the project root. Key sections:
-
-### TRIPOD section (`tripod:`)
-
-| Key | Default | Description |
-|---|---|---|
-| `pre_specified_predictors` | 8 predictors | The pre-specified feature set for the deployable model |
-| `plausible_bounds` | `{lvef: [5,80], length: [1,200], age: [18,110]}` | Physiologic ranges → values outside become NaN |
-| `score_increments` | `{lvef: -10, length: 10, age: 10}` | Clinical increments for the point score |
-| `points_max` | `10` | Maximum points in the scoring system |
-| `n_boot_optimism` | `500` | Bootstrap iterations for optimism-corrected AUC |
-| `tripod_output_dir` | `tripod_outputs` | Output directory for TRIPOD results |
-| `exclude_planned_mcs` | `true` | Exclude planned/prophylactic MCS from derivation |
-| `planned_mcs_col` | `lv_assist2_aae___1` | Column flagging planned MCS |
-
-### Bake-off section
+Edit `config.yaml` in the project root. Top-level keys control the full pipeline.
 
 | Key | Default | Description |
 |---|---|---|
 | `data_path` | `data/for_score.csv` | Path to input CSV |
-| `target` | `lv_assist2_aae___2` | Target column |
-| `output_dir` | `output` | Directory for bake-off results |
-| `k_grid` | `[15, 25, 50, "all"]` | Feature counts to evaluate |
-| `fast_mode` | `false` | Skip slow models (SVM, MLP) |
-| `top_features` | _(list of 15)_ | Featured inputs in the old bake-off dashboard (not used by TRIPOD dashboard) |
+| `target` | `lv_assist2_aae___2` | Target column (urgent MCS) |
+| `random_state` | `42` | Random seed |
+| `test_size` | `0.20` | Held-out test fraction |
+| `cv_splits` | `5` | Stratified CV folds |
+| `n_boot_ci` | `2000` | Bootstrap iterations for AUC CI |
+| `n_repeated_cv` | `20` | Repeated CV repetitions |
+| `cat_max_levels` | `20` | Max levels for categorical detection |
+| `fast_mode` | `false` | Skip SVM/MLP, reduce bootstraps |
+| `k_grid` | `[10, 15, 25, "all"]` | Feature-count candidates for SelectKBest |
+| `yesno_na_vars` | _(10 vars)_ | Columns with 1=yes/2=no/3=NA coding |
+| `redundant_groups` | _(5 groups)_ | Collinear groups for redundancy reduction |
+
+### `tripod:` section
+
+| Key | Default | Description |
+|---|---|---|
+| `pre_specified_predictors` | 8 predictors | The pre-specified feature set for the deployable model |
+| `plausible_bounds` | `{lvef: [5,80], length: [1,200], age: [18,110]}` | Physiologic ranges — values outside become NaN |
+| `score_increments` | `{lvef: -10, length: 10, age: 10}` | Clinical increments for the point score |
+| `points_max` | `10` | Maximum points in the scoring system |
+| `n_boot_optimism` | `500` | Bootstrap iterations for optimism-corrected AUC |
+| `exclude_planned_mcs` | `true` | Exclude planned/prophylactic MCS from derivation |
+| `planned_mcs_col` | `lv_assist2_aae___1` | Column flagging planned MCS |
+| `site_col` | `center` | Site column (for heterogeneity analysis) |
+| `year_col` | `year_of_procedure` | Year column (for temporal split) |
+| `pub_vars` | `{retro, lvef, length}` | Variable mapping for published PROGRESS-CTO score |
+| `pub_pts` | `{retro_yes: 45, ...}` | Nomogram weights for published score |
+| `published_betas` | `null` | Override with explicit logistic coefficients |
 
 ---
 
 ## Usage
 
-> **If the script hangs on startup**, xgboost may be probing CUDA devices. Set:
+> If the script hangs, xgboost may be probing CUDA. Set:
 > ```bash
 > export CUDA_VISIBLE_DEVICES=-1
 > ```
 
-### 1. TRIPOD+AI pipeline (deployable model)
-
-Train and validate the Firth logistic regression on the 8 pre-specified predictors:
+### Run the full pipeline
 
 ```bash
-uv run python -m bakeoff.tripod_main
+uv run python -m bakeoff.main
 ```
+
+This runs all 21 sections matching the companion notebook.
 
 #### Options
 
 ```bash
-# Custom config
-uv run python -m bakeoff.tripod_main --config my_config.yaml
-
-# Override paths
-uv run python -m bakeoff.tripod_main --data-path /path/to/for_score.csv --output-dir /tmp/tripod
-
-# More bootstrap iterations
-uv run python -m bakeoff.tripod_main --n-boot-optimism 2000
+uv run python -m bakeoff.main --data-path /path/to/for_score.csv --output-dir /tmp/results
+uv run python -m bakeoff.main --n-boot-optimism 2000
+uv run python -m bakeoff.main --fast-mode   # skip SVM/MLP for quick iteration
 ```
-
-#### Output (`tripod_outputs/`)
-
-| File | Description |
-|---|---|
-| `final_logreg_firth.pkl` | Serialized pipeline + metadata |
-| `logreg_firth_specification.csv` | Odds ratios, CIs, p-values |
-| `logreg_firth_point_score.csv` | Integer point score per predictor |
-| `logreg_firth_risk_equation.txt` | Plain-text logit equation |
-| `calibration_curve.png` | Calibration plot (OOF) |
-| `roc_curve.png` | ROC curve (OOF) |
-| `dca_curve.png` | Decision-curve analysis |
-
-#### Key results
-
-- OOF AUC with bootstrap CI
-- Optimism-corrected AUC (bootstrap)
-- Calibration slope & Brier score
-- DCA net benefit curve
-
-### 2. Dashboard (Streamlit)
-
-A clinical web app using the TRIPOD deployable model:
-
-```bash
-# After running tripod_main (so tripod_outputs/final_logreg_firth.pkl exists)
-uv run streamlit run src/bakeoff/dashboard.py
-```
-
-- **8 pre-specified predictors** shown as the input form
-- Appropriate input types: number inputs (with plausible bounds) for continuous, Yes/No selects for binary
-- Unfilled fields imputed automatically
-- **AI explanation** — click "Explain with AI" for a 2-3 sentence clinical summary (requires OpenAI API key)
-
-```bash
-export OPENAI_API_KEY="sk-..."
-export OPENAI_MODEL="gpt-4o-mini"   # optional
-uv run streamlit run src/bakeoff/dashboard.py
-```
-
-Or paste the API key into the dashboard's password field (session-only).
-
-### 3. Model bake-off (discrimination benchmark)
-
-For internal comparison only — does **not** feed into the dashboard:
-
-```bash
-uv run python -m bakeoff.main
-
-# Fast mode (skip SVM/MLP)
-uv run python -m bakeoff.main --fast-mode
-
-# Custom paths
-uv run python -m bakeoff.main --data-path /path/to/for_score.csv --output-dir /tmp/bakeoff
-```
-
-#### Models evaluated
-
-LR, NB_Gaussian, NB_Bernoulli, KNN, XGBoost, RandomForest, ExtraTrees, AdaBoost, HistGBM, SVM, MLP
-
-#### Output (`output/`)
-
-- `variable_categorization.csv` — variable type classification
-- `per_model_tuning_results.csv` — best settings per model, sorted by CV AUC
-- `fixed_k_train_test.csv` — CV and test AUC at K = 15, 25, 50
-- `best_model.pkl` — full tuned pipeline + metadata (used by the old bake-off dashboard only)
-- 7 plot PNGs
 
 ---
 
-## Pipeline details
+## Pipeline sections
 
-### TRIPOD pipeline
+| Section | TRIPOD item | Description | Output |
+|---|---|---|---|
+| 1 | 5, 6 | Data loading, cohort derivation, physiologic cleaning | Console |
+| 2 | 7 | Variable typing (binary / categorical / continuous) | `variable_typing.csv` |
+| 3 | 9 | Missing data table | `missingness.csv` |
+| 4 | 8 | 80/20 split, redundancy reduction, EPV | Console |
+| 5a | 12, 13, 15 | Train Firth LR (deployable) + NB_Bernoulli (benchmark) | Console |
+| 5b | — | Marginal contribution — leave-one-out Firth LR | `marginal_contribution.csv` |
+| 5c | 12, 23a | Multi-model bake-off (11 models + Firth) | `bakeoff_results.csv` |
+| 6 | 12e, 23a | Discrimination — OOF AUC, repeated CV, test AUC | `discrimination.csv` |
+| 7 | 12e, 12f | Calibration — intercept, slope, Brier, plot | `plots/calibration_curve.png` |
+| 8 | 12e | Decision-curve analysis | `plots/dca_curve.png` |
+| 9 | 12 | Bootstrap optimism correction (AUC + slope) | Console |
+| 10 | 23b | Site-clustered (GroupKFold) + temporal split | Console |
+| 11 | 14, 23a | Fairness — subgroup AUC across 20+ strata | `subgroup_performance.csv` |
+| 11b | 9, 12 | MICE sensitivity — IterativeImputer | Console |
+| 12 | 12, 23a | External comparison — PROGRESS-CTO + DeLong | `delong_comparison.csv` |
+| 14 | 22, 12g | Odds ratios, point score, risk equation, shrinkage | 3 CSV files + equation |
+| 15 | 18 | Open science — environment info | `environment.json` |
+| 16 | — | TRIPOD+AI 27-item checklist | `tripod_ai_checklist.csv` |
+| 17 | — | Save all results | `results.json` |
 
-1. **Load & clean** — drop index columns, physiologic cleaning (implausible → NaN), exclude planned MCS
-2. **Preprocess** — median imputation + standard scaling for continuous, most-frequent imputation for binary
-3. **Train Firth LR** — penalized logistic regression on all 8 pre-specified predictors (no feature selection)
-4. **OOF evaluation** — 5-fold stratified cross-validation with bootstrap CI for AUC
-5. **Bootstrap optimism correction** — apparent AUC − average optimism from 500+ bootstrap samples
-6. **Calibration** — calibration-in-the-large, calibration slope (statsmodels), Brier score, calibration curve plot
-7. **DCA** — decision-curve analysis across clinically relevant thresholds
-8. **Model specification** — odds ratios, 95% CIs, p-values from the Firth estimator
-9. **Point score** — integer scoring system based on log-odds per clinical increment
-10. **Risk equation** — plain-text logit + probability formula
-11. **Serialize** — save pipeline + metadata for the dashboard
+### Plots (`tripod_outputs/plots/`)
 
-### Bake-off pipeline
+| File | Description |
+|---|---|
+| `comparison_auc.png` | Bar chart — Firth LR vs tuned models (CV AUC) |
+| `comparison_roc.png` | OOF ROC — Firth LR vs NB_Bernoulli |
+| `comparison_calibration.png` | Calibration curves — Firth LR vs NB_Bernoulli |
+| `calibration_curve.png` | Firth LR calibration (10-bin quantile) |
+| `roc_curve.png` | Firth LR OOF ROC curve |
+| `dca_curve.png` | Decision-curve analysis |
 
-1. Load data, drop index/missing/constant/duplicate columns
-2. Classify variables (binary / categorical / continuous)
-3. Redundancy reduction for predefined collinear groups
-4. Stratified 80/20 train/test split
-5. Per-model `GridSearchCV` tuning of K + hyperparameters, scored by CV ROC-AUC
-6. Fixed-K evaluation at K = 15, 25, 50
-7. Summary table + plots
+### Deployable model (`tripod_outputs/`)
+
+| File | Description |
+|---|---|
+| `final_logreg_firth.pkl` | Serialized pipeline + metadata (loaded by dashboard) |
+| `logreg_firth_specification.csv` | Odds ratios, 95% CIs, p-values |
+| `logreg_firth_point_score.csv` | Integer point score per predictor |
+| `logreg_firth_risk_equation.txt` | Plain-text logit + probability equation |
+
+---
+
+## Dashboard (Streamlit)
+
+```bash
+# After running main.py
+uv run streamlit run src/bakeoff/dashboard.py
+```
+
+- 8 pre-specified predictors, auto-imputation, risk score
+- AI explanation via OpenAI (optional, set `OPENAI_API_KEY`)
 
 ---
 
 ## Programmatic usage
 
-### TRIPOD model
-
 ```python
-from bakeoff.predict import load_model, predict_from_dict, list_features
+from bakeoff.predict import load_model, predict_from_dict
 
 pipeline, metadata = load_model("tripod_outputs/final_logreg_firth.pkl")
-
-# List features
-feat = list_features(metadata)
-# feat["all"] -> 8 predictors
-# feat["binary"] -> binary ones
-# feat["continuous"] -> continuous ones
-
-# Predict from partial input
 result = predict_from_dict(
-    {
-        "age_manual_input": 72.0,
-        "retro": 1.0,
-        "calcification_med_sev": 1.0,
-        "peripheral_arterial_diseas": 0.0,
-        "proximal_cap_ambiguity": 1.0,
-        "acs": 0.0,
-        "occlusion_length_mm": 35.0,
-        "left_ventr_ejection_fract": 45.0,
-    },
-    pipeline,
-    metadata,
+    {"age_manual_input": 72.0, "retro": 1.0, "left_ventr_ejection_fract": 45.0, ...},
+    pipeline, metadata,
 )
-# result["probability_positive"] -> 0.0 to 1.0
+print(result["probability_positive"])   # 0.0 to 1.0
 ```
-
-### AI explanation
-
-```python
-from bakeoff.explain import explain_prediction
-
-result = explain_prediction(
-    pipeline,
-    {"age_manual_input": 72.0, "retro": 1.0},
-    metadata,
-    api_key="sk-...",
-)
-print(result["explanation"])
-print(result["top_contributors"])
-```
-
----
-
-## Note on reporting
-
-The **TRIPOD model** (Firth LR, 8 pre-specified predictors) is the deployable model with optimism-corrected AUC, calibration, and decision-curve analysis. The **bake-off** is a separate discrimination benchmark for internal reporting — its best-performing model (typically NB_Bernoulli) achieves a higher AUC but uses 64 features and is poorly calibrated.

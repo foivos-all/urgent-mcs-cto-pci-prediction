@@ -1,25 +1,32 @@
 import os
-import sys
 
 import streamlit as st
-import numpy as np
-import pandas as pd
 
-from bakeoff.predict import load_model, predict_from_dict, list_features
 from bakeoff.config import load_config
 from bakeoff.explain import explain_prediction
+from bakeoff.predict import load_model, predict_from_dict
 
 
 MODEL_PATH = "tripod_outputs/final_logreg_firth.pkl"
-MODEL_METADATA_KEY = "tripod"
+
+DISPLAY_NAMES = {
+    "retro": "Retrograde-first Strategy",
+    "calcification_med_sev": "Moderate/Severe Calcification",
+    "peripheral_arterial_diseas": "Peripheral Arterial Disease",
+    "acs": "Acute Coronary Syndrome Presentation",
+    "proximal_cap_ambiguity": "Proximal-cap Ambiguity",
+    "left_ventr_ejection_fract": "Left Ventricular Ejection Fraction (%)",
+    "age_manual_input": "Age (years)",
+    "occlusion_length_mm": "Occlusion Length (mm)",
+}
 
 
-def _feature_input(feature, ftype):
+def _feature_input(feature, label, ftype):
     if ftype == "continuous":
-        return st.number_input(feature, value=None, placeholder="Enter value", key=f"cont_{feature}")
+        return st.number_input(label, value=None, placeholder="Enter value", key=f"cont_{feature}")
     elif ftype == "binary":
-        val = st.selectbox(feature, ["", "No (0)", "Yes (1)"], key=f"bin_{feature}")
-        return None if val == "" else 1.0 if "Yes" in val else 0.0
+        val = st.selectbox(label, ["No (0)", "Yes (1)"], key=f"bin_{feature}")
+        return 0.0 if "No" in val else 1.0
     return None
 
 
@@ -35,20 +42,16 @@ def main():
     cfg = load_config()
     tripod_cfg = cfg.get("tripod", {})
     predictors = tripod_cfg.get("pre_specified_predictors", [])
-    plausible_bounds = tripod_cfg.get("plausible_bounds", {})
-    score_increments = tripod_cfg.get("score_increments", {})
 
     st.set_page_config(
-        page_title="CTO-PCI Risk Predictor (TRIPOD+AI)",
+        page_title="PROGRESS-uMCS Score",
         page_icon="❤️",
         layout="centered",
     )
 
-    st.title("CTO-PCI Risk Predictor")
+    st.title("PROGRESS-uMCS Score")
     st.markdown(
-        "Deployable TRIPOD+AI-compliant Firth logistic regression model. "
-        "Predicts the likelihood of the composite adverse outcome "
-        "(`lv_assist2_aae___2`). Enter one of the 8 pre-specified predictors below."
+        "Predicts the likelihood of requiring cardiac support during CTO PCI."
     )
 
     if not os.path.exists(MODEL_PATH):
@@ -64,9 +67,6 @@ def main():
         st.error(f"Failed to load model: {e}")
         st.stop()
 
-    continuous = metadata.get("continuous", [])
-    binary = metadata.get("binary", [])
-
     st.divider()
     st.subheader("Enter 8 Pre-Specified Predictors")
 
@@ -75,19 +75,19 @@ def main():
     with st.form("prediction_form"):
         for feature in predictors:
             ftype = _get_input_type(feature, metadata)
-            raw = _feature_input(feature, ftype)
+            label = DISPLAY_NAMES.get(feature, feature)
+            raw = _feature_input(feature, label, ftype)
             values[feature] = raw
 
         st.divider()
         submitted = st.form_submit_button("Predict Risk", use_container_width=True)
 
-        st.divider()
-        submitted = st.form_submit_button("Predict Risk", use_container_width=True)
-
     if submitted:
-        filled = {k: v for k, v in values.items() if v is not None and v != ""}
-        total_count = len(predictors)
-        filled_count = len(filled)
+        missing = [k for k, v in values.items() if v is None or v == ""]
+        if missing:
+            st.error("Please fill in all fields before predicting.")
+            st.stop()
+        filled = values
         with st.spinner("Computing prediction..."):
             try:
                 result = predict_from_dict(filled, pipeline, metadata)
@@ -95,31 +95,19 @@ def main():
                 st.error(f"Prediction failed: {e}")
                 st.stop()
 
+        st.session_state.result = result
+        st.session_state.filled = filled
+        st.session_state.form_values = values
+
+    if "result" in st.session_state:
+        result = st.session_state.result
+        filled = st.session_state.filled
+        values = st.session_state.form_values
+
+        pct = result["probability_positive"] * 100
+
         st.divider()
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            pct = result["probability_positive"] * 100
-            st.metric("Risk Score", f"{pct:.1f}%")
-        with col2:
-            label = "HIGH RISK" if result["prediction"] == 1 else "LOW RISK"
-            st.metric("Predicted Class", label)
-        with col3:
-            st.metric("Fields Used", f"{filled_count} / {total_count}")
-
-        if filled_count < total_count:
-            imputed = total_count - filled_count
-            st.caption(
-                f"{imputed} unfilled field(s) were imputed "
-                "(median for continuous, most frequent for binary/categorical)."
-            )
-
-        if pct >= 5:
-            st.warning(
-                "Elevated risk. Consider reviewing the patient's full profile "
-                "and discussing with the Heart Team."
-            )
-        else:
-            st.info("Low predicted risk based on entered data.")
+        st.metric("Risk Score", f"{pct:.1f}%")
 
         st.divider()
         with st.expander("Explain with AI", expanded=False):

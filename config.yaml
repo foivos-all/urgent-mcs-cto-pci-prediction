@@ -1,30 +1,33 @@
 data_path: "data/for_score.csv"
 target: "lv_assist2_aae___2"
-output_dir: "output"
 random_state: 42
 test_size: 0.20
 cv_splits: 5
-n_bootstrap_ci: 2000
+n_boot_ci: 2000
+n_repeated_cv: 20
 cat_max_levels: 20
-k_grid: [15, 25, 50, "all"]
 fast_mode: false
-recode_123_as_yesno_na: true
-top_features:
-  - age_manual_input
-  - bmi
-  - diabetes_mellitus
-  - hypertension
-  - smoking
-  - dyslipidemia
-  - prior_mi
-  - prior_pci
-  - prior_cabg
-  - peripheral_arterial_diseas
-  - cerebrovascular_disease
-  - chronic_lung_disease
-  - left_ventr_ejection_fract
-  - occlusion_length_mm
-  - calcification_med_sev
+
+k_grid: [10, 15, 25, "all"]
+
+yesno_na_vars:
+  - "use_of_acei"
+  - "use_of_arb"
+  - "use_of_aspirin"
+  - "use_of_ezetimibe"
+  - "use_of_pcsk9i"
+  - "use_of_statins"
+  - "ranolazine_yesno"
+  - "beta_blockers_yesno"
+  - "long_acting_nitr_yesno"
+  - "calcium_channel_block"
+
+redundant_groups:
+  - ["calcification_med_sev", "j_cto_calcification_score"]
+  - ["lmcto", "target_vessel_overall"]
+  - ["j_cto_lesion_length", "occlusion_length_mm"]
+  - ["j_cto_tortuosity_score_1_f", "tortuosity_med_sev"]
+  - ["left_ventr_ejection_fract", "lvef40", "lvef50", "prior_heart_failure"]
 
 tripod:
   deployable_model: "LogReg_Firth"
@@ -61,3 +64,4 @@ tripod:
     lvef_ref: 80.0
     lvef_per_pct_below_ref: 1.4
     length_per_mm: 0.667
+  published_betas: null
