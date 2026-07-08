@@ -264,7 +264,7 @@ def run_subgroup_analysis(
 # ---------------------------------------------------------------------------
 
 def run_mice_sensitivity(
-    X, y, ps_cont, ps_bin, ps_cat, random_state=42, cv_splits=5
+    X, y, ps_cont, ps_bin, ps_cat, random_state=42, cv_splits=5, variant="firth"
 ):
     cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
     transformers = []
@@ -294,7 +294,7 @@ def run_mice_sensitivity(
         ))
     prep_mi = ColumnTransformer(transformers, remainder="drop")
     oof = cross_val_predict(
-        Pipeline([("prep", prep_mi), ("model", FirthLogisticRegression())]),
+        Pipeline([("prep", prep_mi), ("model", FirthLogisticRegression(variant=variant))]),
         X, y, cv=cv, method="predict_proba", n_jobs=-1,
     )[:, 1]
     auc_mi = float(roc_auc_score(y, oof))
@@ -451,25 +451,25 @@ def generate_checklist(output_dir):
         ("2 Abstract", "MANUSCRIPT", "TRIPOD+AI for Abstracts"),
         ("3 Background", "MANUSCRIPT", "prior urgent-MCS score; BCIS-3 context"),
         ("4 Objectives", "MANUSCRIPT", "development & validation objective"),
-        ("5 Data source/eligibility", "CODE", "data derivation cohort (prophylactic MCS excluded)"),
-        ("6 Outcome", "CODE", "Section 1: outcome definition"),
+        ("5 Data source/eligibility", "CODE", "Section 1: derivation cohort (prophylactic-MCS excluded); flow"),
+        ("6 Outcome", "CODE", "Section 1"),
         ("7 Predictors", "CODE", "Section 2 typing + pre-procedural audit"),
         ("8 Sample size", "CODE", "Section 4 EPV"),
-        ("9 Missing data", "CODE", "Section 3 + Section 11b MICE"),
+        ("9 Missing data", "CODE", "Section 3"),
         ("10 Data preparation", "CODE", "Sections 2/4"),
-        ("11 Model type / candidates", "CODE", "pre-specified Firth LR (deployable) + NB benchmark; EPV rationale"),
-        ("12 Analytical methods", "CODE", "Sections 5-9, 12 incl. external comparison"),
-        ("13 Class imbalance", "CODE", "Section 5 + Section 7"),
+        ("11 Model type / candidates", "CODE", "Sec 0/5: pre-specified Firth/FLIC (deployable) + ExtraTrees benchmark; EPV rationale"),
+        ("12 Analytical methods", "CODE", "Sections 5-9,12 incl. external comparison"),
+        ("13 Class imbalance", "CODE", "Firth Jeffreys penalty + FLIC/FLAC calibration; no resampling"),
         ("14 Fairness", "CODE", "Section 11"),
         ("15 Model output", "CODE", "Section 5: probability"),
         ("16 Risk groups", "PARTIAL", "Section 14 point score -> define cut-points in manuscript"),
-        ("17 Evaluation/validation design", "CODE", "Sections 6, 9, 10"),
+        ("17 Evaluation/validation design", "CODE", "Sections 6,9,10"),
         ("18 Open science", "PARTIAL", "Section 15"),
         ("19 Patient & public involvement", "MANUSCRIPT", "describe PPI or state none"),
         ("20 Participants/Table 1", "CODE", "Section 1b"),
-        ("21 Participants & events per analysis", "CODE", "Sections 1, 4, 6"),
-        ("22 Model specification", "CODE", "Sec 14: deployable Firth only — equation+OR+points+shrinkage"),
-        ("23a Performance + subgroups + comparison", "CODE", "Sec 6-12 on deployable; NB/published as benchmarks (DeLong)"),
+        ("21 Participants & events per analysis", "CODE", "Sections 1,4,6"),
+        ("22 Model specification", "CODE", "Sec 14: deployable Firth/FLIC — equation+OR+points+shrinkage"),
+        ("23a Performance + subgroups + comparison", "CODE", "Sec 6-12 on deployable; ExtraTrees/published as benchmarks (DeLong, OOF + test)"),
         ("23b Heterogeneity across clusters", "CODE", "Section 10 site & temporal"),
         ("24 Model updating", "PARTIAL", "Sec 7 recalibration + Sec 14 shrinkage factor"),
         ("25 Usability/implementation", "MANUSCRIPT", "how clinicians apply the score"),

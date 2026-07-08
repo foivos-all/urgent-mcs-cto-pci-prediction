@@ -3,7 +3,9 @@ import joblib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
 import statsmodels.api as sm
+from scipy import stats
 
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -40,7 +42,7 @@ from sklearn.base import clone
 
 import seaborn as sns
 
-from bakeoff.firth import FirthLogisticRegression
+from bakeoff.firth import FirthLogisticRegression, _sigmoid
 
 try:
     from xgboost import XGBClassifier
@@ -155,6 +157,127 @@ def _net_benefit(yv, p, th):
         w = pt / (1 - pt)
         m.append(tp / n - fp / n * w)
     return np.array(m)
+
+
+# ===================================================================
+# 0b. Sample-size adequacy — pmsampsize (Riley et al.)  (item 8)
+# ===================================================================
+
+def approximate_R2(auc, prev, n=400000, seed=42):
+    """Cox-Snell R^2 implied by an anticipated C-statistic and prevalence (Riley simulation)."""
+    r = np.random.default_rng(seed)
+    mu = np.sqrt(2) * stats.norm.ppf(auc)
+    n1 = int(round(prev * n))
+    n0 = n - n1
+    lp = np.concatenate([r.normal(mu, 1, n1), r.normal(0, 1, n0)])
+    yy = np.concatenate([np.ones(n1), np.zeros(n0)])
+    m = sm.GLM(yy, sm.add_constant(lp), family=sm.families.Binomial()).fit()
+    r2cs = 1 - np.exp((2 / n) * (m.llnull - m.llf))
+    maxr2 = 1 - np.exp(2 * (prev * np.log(prev) + (1 - prev) * np.log(1 - prev)))
+    return float(r2cs), float(maxr2), float(r2cs / maxr2)
+
+
+def pmsampsize_bin(parameters, prevalence, cstat=None, r2cs=None, seed=42):
+    if r2cs is None:
+        r2cs, maxr2, nag = approximate_R2(cstat, prevalence, seed=seed)
+    else:
+        maxr2 = 1 - np.exp(2 * (prevalence * np.log(prevalence) + (1 - prevalence) * np.log(1 - prevalence)))
+        nag = r2cs / maxr2
+    P = parameters
+    phi = prevalence
+    n1 = P / ((0.9 - 1) * np.log(1 - r2cs / 0.9))                          # criterion 1: shrinkage 0.9
+    S2 = r2cs / (r2cs + 0.05 * maxr2)
+    n2 = P / ((S2 - 1) * np.log(1 - r2cs / S2))                            # criterion 2: optimism <= 0.05
+    n3 = (1.96 / 0.05) ** 2 * phi * (1 - phi)                              # criterion 3: overall risk +/-0.05
+    nfin = max(n1, n2, n3)
+    return dict(
+        parameters=P, prevalence=round(phi, 4), cstat=cstat, r2cs=round(r2cs, 4), max_r2=round(maxr2, 4),
+        nagelkerke=round(nag, 4), n_crit1=int(np.ceil(n1)), n_crit2=int(np.ceil(n2)),
+        n_crit3=int(np.ceil(n3)), n_required=int(np.ceil(nfin)),
+        events_required=int(np.ceil(nfin * phi)), epp_required=round(np.ceil(nfin * phi) / P, 1),
+    )
+
+
+def expected_shrinkage_at_n(n, parameters, r2cs):
+    LR = -n * np.log(1 - r2cs)
+    return 1 - parameters / LR
+
+
+def print_pmsampsize_grid(n_predictors=8):
+    print("A-PRIORI SAMPLE-SIZE GRID (pmsampsize; item 8):")
+    rows = []
+    for phi in [0.02, 0.03, 0.04, 0.05]:
+        for c in [0.70, 0.75, 0.80]:
+            o = pmsampsize_bin(n_predictors, phi, cstat=c)
+            rows.append({
+                "prev": phi, "C": c, "R2cs": o["r2cs"], "max_R2": o["max_r2"],
+                "n_required": o["n_required"], "events_required": o["events_required"],
+                "EPP_required": o["epp_required"],
+            })
+    grid = pd.DataFrame(rows)
+    print(grid.to_string(index=False))
+    print("\nThe binding criterion is #1 (shrinkage); required EVENTS depend chiefly on C "
+          "(~140 at C=0.70, ~84 at C=0.75, ~55 at C=0.80). Read off the data-driven verdict after Section 6.\n")
+    return rows
+
+
+def print_pmsampsize_verdict(prevalence, n_predictors, oof_auc, n_dev, events_dev):
+    """Data-driven pmsampsize verdict using the realized prevalence and deployable OOF C-statistic."""
+    r2, maxr2, nag = approximate_R2(oof_auc, prevalence)
+    need = pmsampsize_bin(n_predictors, prevalence, r2cs=r2)
+    s_dev = expected_shrinkage_at_n(n_dev, n_predictors, r2)
+    print(f"\nPMSAMPSIZE VERDICT (data-driven): prevalence={prevalence:.3%}, P={n_predictors}, "
+          f"OOF C={oof_auc:.3f} -> R2cs={r2:.3f}")
+    print(f"  required N={need['n_required']} (events {need['events_required']}, EPP {need['epp_required']}); "
+          f"you have N(dev)={n_dev} events(dev)={events_dev}.")
+    print(f"  expected dev-set shrinkage S~{s_dev:.3f} "
+          f"{'(>=0.90 OK)' if s_dev >= 0.9 else '(<0.90 -> FLIC + shrinkage recalibration matter)'}")
+    return {
+        "prevalence": prevalence, "P": n_predictors, "oof_c": oof_auc, "r2cs": r2,
+        "n_required": need["n_required"], "events_required": need["events_required"],
+        "expected_shrinkage": float(s_dev),
+    }
+
+
+# ===================================================================
+# Synthetic dry-run cohort (used only when data_path is absent)
+# ===================================================================
+
+def make_synth(N=3200, seed=42, path="for_score.csv"):
+    """Synthetic cohort matching the expected schema, for a self-contained dry run when the real
+    for_score.csv registry export isn't available."""
+    r = np.random.default_rng(seed)
+    age = np.clip(r.normal(66, 11, N), 30, 92)
+    lvef = np.clip(r.normal(50, 12, N), 10, 70)
+    length = np.clip(r.exponential(22, N) + 5, 1, 150)
+    retro = r.binomial(1, 0.18, N)
+    pca = r.binomial(1, 0.30, N)
+    acs = r.binomial(1, 0.20, N)
+    calc = r.binomial(1, 0.45, N)
+    pad = r.binomial(1, 0.18, N)
+    lp = (-5.2 + 0.9 * retro + 0.045 * (45 - lvef) + 0.018 * length + 0.020 * (age - 66)
+          + 0.5 * acs + 0.35 * calc + 0.3 * pad + r.normal(0, 0.4, N))
+    y = r.binomial(1, _sigmoid(lp))
+    d = pd.DataFrame(dict(
+        lv_assist2_aae___2=y, lv_assist2_aae___1=r.binomial(1, 0.06, N),
+        center=r.integers(1, 9, N), year_of_procedure=r.integers(2017, 2025, N),
+        retro=retro, left_ventr_ejection_fract=lvef, occlusion_length_mm=length,
+        proximal_cap_ambiguity=pca, age_manual_input=age, acs=np.where(acs == 1, 1, 2),
+        calcification_med_sev=calc, peripheral_arterial_diseas=pad,
+        j_cto_calcification_score=calc + r.integers(0, 3, N), lmcto=r.binomial(1, 0.05, N),
+        target_vessel_overall=r.integers(1, 4, N), j_cto_lesion_length=length + r.normal(0, 3, N),
+        j_cto_tortuosity_score_1_f=r.integers(0, 4, N), tortuosity_med_sev=r.binomial(1, 0.3, N),
+        lvef40=(lvef < 40).astype(int), lvef50=(lvef < 50).astype(int),
+        prior_heart_failure=r.binomial(1, 0.2, N), gender=r.integers(1, 3, N), race=r.integers(1, 5, N),
+        ethnicity=r.integers(1, 3, N), diabetes_mellitus=r.binomial(1, 0.4, N),
+        prior_cabg=r.binomial(1, 0.2, N), prior_mi=r.binomial(1, 0.3, N),
+        current_dialysis=r.binomial(1, 0.05, N), chronic_lung_disease=r.binomial(1, 0.15, N),
+        hypertension=r.binomial(1, 0.7, N), smoking=r.binomial(1, 0.25, N),
+    ))
+    for c in ["left_ventr_ejection_fract", "occlusion_length_mm", "proximal_cap_ambiguity"]:
+        d.loc[r.random(N) < 0.06, c] = np.nan
+    d.to_csv(path, index=False)
+    return d
 
 
 # ===================================================================
@@ -406,7 +529,7 @@ def reduce_redundancy(X_train, X_test, y_train, redundant_groups, pre_specified_
 # 4/5a. Firth LR training  (deployable — pre-specified predictors)
 # ===================================================================
 
-def _firth_pipe(cols, binary, categorical, continuous):
+def _firth_pipe(cols, binary, categorical, continuous, variant="firth"):
     cc = [c for c in cols if c in continuous]
     bb = [c for c in cols if c in binary]
     kk = [c for c in cols if c in categorical]
@@ -429,11 +552,11 @@ def _firth_pipe(cols, binary, categorical, continuous):
             kk,
         ))
     prep = ColumnTransformer(transformers, remainder="drop")
-    return Pipeline([("prep", prep), ("model", FirthLogisticRegression())])
+    return Pipeline([("prep", prep), ("model", FirthLogisticRegression(variant=variant))])
 
 
-def train_firth(X_train, y_train, predictors, binary, categorical, continuous):
-    pipe = _firth_pipe(predictors, binary, categorical, continuous)
+def train_firth(X_train, y_train, predictors, binary, categorical, continuous, variant="firth"):
+    pipe = _firth_pipe(predictors, binary, categorical, continuous, variant=variant)
     pipe.fit(X_train, y_train)
     return pipe
 
@@ -480,7 +603,12 @@ def _model_zoo(y_train, fast_mode=False):
 
 
 def run_bakeoff(X_train, y_train, X_test, y_test, prep_prespec, model_zoo, cv, random_state=42):
+    """Single-pass bake-off: each zoo model is tuned (GridSearchCV) exactly once, and its
+    OOF predictions (pooled cross_val_predict), test predictions, and per-fold CV scores are
+    all captured from that one fit — mirroring notebook cell 22. Callers should reuse
+    oof_scores/test_scores/cv_folds/fitted_best rather than re-running GridSearchCV."""
     results = []
+    oof_scores, test_scores, cv_folds, fitted_best = {}, {}, {}, {}
     print("#" * 60)
     print("# 5c. Multi-model bake-off — pre-specified predictors, no feature selection")
     print("#" * 60)
@@ -491,31 +619,39 @@ def run_bakeoff(X_train, y_train, X_test, y_test, prep_prespec, model_zoo, cv, r
             scoring="roc_auc", cv=cv, n_jobs=-1, refit=True, return_train_score=False,
         )
         gs.fit(X_train, y_train)
-        cv_auc = gs.best_score_
-        test_pred = gs.best_estimator_.predict_proba(X_test)[:, 1]
-        test_auc = roc_auc_score(y_test, test_pred)
-        lo, hi = _boot_ci(y_test.values, test_pred, seed=random_state)
+        best = gs.best_estimator_
+        fitted_best[name] = best
+        oof_scores[name] = cross_val_predict(
+            clone(best), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1,
+        )[:, 1]
+        test_scores[name] = best.predict_proba(X_test)[:, 1]
+        cv_folds[name] = cross_val_score(clone(best), X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
+        oof_auc = roc_auc_score(y_train, oof_scores[name])
+        test_auc = roc_auc_score(y_test, test_scores[name])
+        lo, hi = _boot_ci(y_test.values, test_scores[name], seed=random_state)
         results.append({
             "model": name,
-            "cv_auc": round(cv_auc, 3),
-            "test_auc": round(test_auc, 3),
-            "test_lo": round(lo, 3),
-            "test_hi": round(hi, 3),
+            "cv_auc": round(float(np.mean(cv_folds[name])), 3),
+            "oof_auc": round(float(oof_auc), 3),
+            "test_auc": round(float(test_auc), 3),
+            "test_lo": round(float(lo), 3),
+            "test_hi": round(float(hi), 3),
         })
-        print(f"  {name:13s} CV={cv_auc:.3f}  test={test_auc:.3f}")
-    return pd.DataFrame(results).sort_values("cv_auc", ascending=False).reset_index(drop=True)
+        print(f"  {name:13s} CV={np.mean(cv_folds[name]):.3f}  OOF={oof_auc:.3f}  test={test_auc:.3f}")
+    bake_df = pd.DataFrame(results).sort_values("oof_auc", ascending=False).reset_index(drop=True)
+    return bake_df, oof_scores, test_scores, cv_folds, fitted_best
 
 
 # ===================================================================
 # 5b. Marginal contribution — leave-one-out
 # ===================================================================
 
-def run_marginal_contribution(X_train, y_train, full_predictors, binary, categorical, continuous, cv, random_state=42):
+def run_marginal_contribution(X_train, y_train, full_predictors, binary, categorical, continuous, cv, random_state=42, variant="firth"):
     results_mc = []
     full_auc = float(roc_auc_score(
         y_train,
         cross_val_predict(
-            _firth_pipe(full_predictors, binary, categorical, continuous),
+            _firth_pipe(full_predictors, binary, categorical, continuous, variant=variant),
             X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1,
         )[:, 1],
     ))
@@ -523,7 +659,7 @@ def run_marginal_contribution(X_train, y_train, full_predictors, binary, categor
 
     for c_exclude in full_predictors:
         sub = [c for c in full_predictors if c != c_exclude]
-        sub_pipe = _firth_pipe(sub, binary, categorical, continuous)
+        sub_pipe = _firth_pipe(sub, binary, categorical, continuous, variant=variant)
         oof = cross_val_predict(
             sub_pipe, X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1
         )[:, 1]
@@ -682,31 +818,44 @@ def bootstrap_optimism(X, y, pipe, n_boot=500, random_state=42):
 # 14. Model specification, point score, risk equation  (items 22, 12g)
 # ===================================================================
 
-def save_specification(pipe, outdir, X, y):
-    final_lr = clone(pipe).fit(X, y)
+def save_specification(pipe_template, outdir, X, y):
+    """Fits pipe_template (a Firth pipeline already configured with the deployable variant and
+    shrinkage) on the full derivation cohort. The OR table uses the FIRTH (de-biased)
+    coefficients + their penalized-likelihood CIs — always beta_firth_/ci_/pvals_, regardless of
+    variant, per notebook Section 14. Returns the fitted pipeline for reuse (point score, risk
+    equation, pickling) so it is only fit once."""
+    final_lr = clone(pipe_template).fit(X, y)
     prep_f = final_lr.named_steps["prep"]
     fl = final_lr.named_steps["model"]
     feat = list(prep_f.get_feature_names_out())
     terms = ["intercept"] + feat
-    beta = fl.beta_
+    beta_firth = fl.beta_firth_
     ci = fl.ci_
     spec = pd.DataFrame({
         "term": terms,
-        "beta": beta,
-        "odds_ratio": np.exp(beta),
+        "beta_firth": beta_firth,
+        "odds_ratio": np.exp(beta_firth),
         "or_lo": np.exp(ci[:, 0]),
         "or_hi": np.exp(ci[:, 1]),
         "p_value": fl.pvals_,
     })
     spec.to_csv(os.path.join(outdir, "logreg_firth_specification.csv"), index=False)
-    print("DEPLOYABLE FIRTH LR SPECIFICATION (item 22):")
+    print("DEPLOYABLE FIRTH LR SPECIFICATION (item 22) — Firth de-biased odds ratios:")
     print(spec.round(3).to_string(index=False))
-    return spec, prep_f, fl
+    print(f"  deployed intercept (variant={fl.variant}, shrinkage={fl.shrinkage:.3f}) = {fl.intercept_:.4f}; "
+          f"deployed slopes = shrinkage x Firth slopes.")
+    return spec, final_lr
 
 
-def compute_point_score(pipe, prep_f, fl, score_increments, points_max, outdir, ps_cont=None):
+def compute_point_score(final_lr, score_increments, points_max, outdir, ps_cont=None):
+    """Clinically-scaled integer point score from the de-biased (Firth) per-natural-unit
+    coefficients — matches notebook Section 14, which scores on beta_firth_, not the deployed
+    (shrunk) coefficients. Returns (point_table, ref) where ref is the log-odds represented by
+    one point — Section 18 needs it to convert predictions to points on the same scale."""
+    prep_f = final_lr.named_steps["prep"]
+    fl = final_lr.named_steps["model"]
     feat = list(prep_f.get_feature_names_out())
-    nbeta = fl.beta_[1:]
+    nbeta = fl.beta_firth_[1:]
     sd_map = {}
     if ps_cont and prep_f.named_transformers_.get("cont", None) is not None:
         scl = prep_f.named_transformers_["cont"].named_steps.get("sc", None)
@@ -733,17 +882,239 @@ def compute_point_score(pipe, prep_f, fl, score_increments, points_max, outdir, 
     ptab.to_csv(os.path.join(outdir, "logreg_firth_point_score.csv"), index=False)
     print(f"\nPOINT SCORE (1 pt = {ref:.3f} log-odds, strongest = {points_max}):")
     print(ptab.round(3).to_string(index=False))
-    return ptab
+    return ptab, ref
 
 
-def save_risk_equation(pipe, prep_f, fl, outdir):
+def save_risk_equation(final_lr, outdir):
+    """Uses the SHIPPED (deployed) coefficients — fl.intercept_/coef_ already reflect the
+    variant (e.g. FLIC) and shrinkage — since this is the equation predict_proba actually uses."""
+    prep_f = final_lr.named_steps["prep"]
+    fl = final_lr.named_steps["model"]
     feat = list(prep_f.get_feature_names_out())
-    nbeta = fl.beta_[1:]
-    eq = "logit(p) = %.4f" % fl.beta_[0]
-    eq += "".join(f" + ({b:.4f})*[{n}]" for b, n in zip(nbeta, feat))
+    eq = "logit(p) = %.4f" % fl.intercept_
+    eq += "".join(f" + ({b:.4f})*[{n}]" for b, n in zip(fl.coef_, feat))
     with open(os.path.join(outdir, "logreg_firth_risk_equation.txt"), "w") as f:
         f.write(eq + "\n\np = 1/(1+exp(-logit(p)))\n")
     print(f"Risk equation saved.")
+
+
+# ===================================================================
+# 14b. Sensitivity — reduced model dropping age & occlusion length  (items 12, 23a)
+# ===================================================================
+
+def run_reduced_model_sensitivity(
+    X, y, X_train, y_train, X_test, y_test, ps_present, oof_full,
+    binary, categorical, continuous, cv, outdir, variant="firth",
+):
+    """5c/14 flagged age_manual_input and occlusion_length_mm as carrying little independent
+    signal. Refits the deployable Firth on the remaining predictors and DeLong-tests (OOF)
+    whether dropping the two costs discrimination. The full predictor set stays primary
+    (occlusion length anchors the published nomogram); this is a robustness check only."""
+    from bakeoff.analysis import delong_test
+
+    red_cols = [c for c in ps_present if c not in ("age_manual_input", "occlusion_length_mm")]
+    oof_red = cross_val_predict(
+        _firth_pipe(red_cols, binary, categorical, continuous, variant=variant),
+        X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1,
+    )[:, 1]
+    auc_full = float(roc_auc_score(y_train, oof_full))
+    auc_red = float(roc_auc_score(y_train, oof_red))
+    a_f, a_r, pv = delong_test(y_train.values, oof_full, oof_red)
+    red_test = _firth_pipe(red_cols, binary, categorical, continuous, variant=variant).fit(
+        X_train, y_train,
+    ).predict_proba(X_test)[:, 1]
+    print(f"\nREDUCED MODEL ({len(red_cols)} predictors): {red_cols}")
+    print(f"  OOF AUC   full({len(ps_present)})={auc_full:.3f}  reduced({len(red_cols)})={auc_red:.3f}  | DeLong p={pv:.3f}")
+    print(f"  OOF cal-slope reduced={_cal_slope_only(y_train, oof_red):.3f}  | "
+          f"test AUC reduced={roc_auc_score(y_test, red_test):.3f}")
+
+    red_final = _firth_pipe(red_cols, binary, categorical, continuous, variant=variant).fit(X, y)
+    rf = red_final.named_steps["model"]
+    rp = red_final.named_steps["prep"]
+    red_spec = pd.DataFrame({
+        "term": ["intercept"] + list(rp.get_feature_names_out()),
+        "odds_ratio": np.exp(rf.beta_firth_),
+        "or_lo": np.exp(rf.ci_[:, 0]),
+        "or_hi": np.exp(rf.ci_[:, 1]),
+        "p_value": rf.pvals_,
+    })
+    red_spec.to_csv(os.path.join(outdir, "reduced_model_specification.csv"), index=False)
+    print("\nReduced-model odds ratios (Firth de-biased):")
+    print(red_spec.round(3).to_string(index=False))
+
+    same = abs(auc_full - auc_red) < 0.01 and pv > 0.05
+    print(f"\nVerdict: dropping age & occlusion length -> "
+          f"{'no meaningful discrimination loss' if same else 'measurable discrimination change'} "
+          f"(dAUC={auc_red - auc_full:+.3f}, p={pv:.3f}). Full predictor model stays primary.")
+    return {
+        "predictors": red_cols, "oof_auc_full": auc_full, "oof_auc_reduced": auc_red,
+        "delong_p": float(pv), "oof_cal_slope_reduced": float(_cal_slope_only(y_train, oof_red)),
+        "test_auc_reduced": float(roc_auc_score(y_test, red_test)),
+    }
+
+
+# ===================================================================
+# 18. Observed vs predicted incidence by deployable-model point strata
+# ===================================================================
+
+def plot_incidence_by_point_strata(final_lr, ref, X, y, X_train, X_test, outdir, plots_dir):
+    """Descriptive risk-stratification plot for the final shipped model (FLIC + shrinkage,
+    refit on the full derivation cohort). Predicted incidence is the mean predicted probability
+    within each point stratum; observed incidence is the empirical event rate. The point scale
+    (`ref` = log-odds per point, from Section 14) is anchored so the lowest-risk patient in the
+    full cohort has 0 points, and reused across whole/test/training cohort panels."""
+    point_unit = float(ref) if np.isfinite(ref) and ref > 0 else 1.0
+
+    pred_all = np.clip(final_lr.predict_proba(X)[:, 1], 1e-9, 1 - 1e-9)
+    lp_all = np.log(pred_all / (1 - pred_all))
+    points_all = np.round((lp_all - np.nanmin(lp_all)) / point_unit).astype(int)
+    score_frame = pd.DataFrame({
+        "y": np.asarray(y, dtype=int),
+        "pred": pred_all,
+        "deployable_points": points_all,
+    }, index=X.index)
+
+    cohort_frames = {
+        "Whole cohort": score_frame.copy(),
+        "Test cohort": score_frame.loc[X_test.index].copy(),
+        "Training cohort": score_frame.loc[X_train.index].copy(),
+    }
+
+    bin_schemes = [
+        ("10-point strata", [0, 10, 20, 30, 40, np.inf],
+         ["0–9", "10–19", "20–29", "30–39", ">39"]),
+        ("5-point strata", [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, np.inf],
+         ["0–4", "5–9", "10–14", "15–19", "20–24", "25–29", "30–34", "35–39", "40–44", ">44"]),
+        ("7-point strata", [0, 7, 14, 21, 28, 35, 42, np.inf],
+         ["0–6", "7–13", "14–20", "21–27", "28–34", "35–41", ">41"]),
+    ]
+
+    fl = final_lr.named_steps.get("model")
+    prep = final_lr.named_steps.get("prep")
+    feature_names = list(prep.get_feature_names_out()) if prep is not None else []
+    print(f"\nMODEL USED FOR FIGURE 18: {type(fl).__name__} "
+          f"(variant={getattr(fl, 'variant', '')}, shrinkage={getattr(fl, 'shrinkage', float('nan')):.3f}, "
+          f"deployed intercept={getattr(fl, 'intercept_', float('nan')):.4f}); "
+          f"1 point = {point_unit:.3f} log-odds; terms: {feature_names}")
+
+    point_counts_by_cohort = (
+        pd.concat(
+            [frame["deployable_points"].value_counts().sort_index().rename(name)
+             for name, frame in cohort_frames.items()],
+            axis=1,
+        )
+        .fillna(0)
+        .astype(int)
+        .rename_axis("deployable_points")
+        .reset_index()
+    )
+    point_counts_by_cohort.to_csv(
+        os.path.join(outdir, "deployable_patient_counts_by_exact_point.csv"), index=False,
+    )
+    print("\nNumber of patients at each exact deployable point value (Figure 18):")
+    print(point_counts_by_cohort.to_string(index=False))
+
+    def _summarize(d, edges, labels, cohort_name, scheme_name):
+        z = d.copy()
+        z["point_stratum"] = pd.cut(
+            z["deployable_points"], bins=edges, labels=labels,
+            right=False, include_lowest=True,
+        )
+        out = (z.groupby("point_stratum", observed=False)
+                 .agg(n=("y", "size"), events=("y", "sum"),
+                      observed_incidence=("y", "mean"),
+                      predicted_incidence=("pred", "mean"),
+                      point_min=("deployable_points", "min"),
+                      point_max=("deployable_points", "max"))
+                 .reset_index())
+        out.insert(0, "scheme", scheme_name)
+        out.insert(1, "cohort", cohort_name)
+        out["n"] = out["n"].astype(int)
+        out["events"] = out["events"].fillna(0).astype(int)
+        out["observed_incidence_pct"] = out["observed_incidence"] * 100
+        out["predicted_incidence_pct"] = out["predicted_incidence"] * 100
+        return out
+
+    incidence_tables = []
+    for scheme_name, edges, labels in bin_schemes:
+        for cohort_name, frame in cohort_frames.items():
+            incidence_tables.append(_summarize(frame, edges, labels, cohort_name, scheme_name))
+    incidence_by_point_strata = pd.concat(incidence_tables, ignore_index=True)
+    incidence_by_point_strata.to_csv(
+        os.path.join(outdir, "deployable_observed_predicted_incidence_by_point_strata.csv"),
+        index=False,
+    )
+
+    yvals = incidence_by_point_strata[["observed_incidence_pct", "predicted_incidence_pct"]].to_numpy(dtype=float)
+    finite_yvals = yvals[np.isfinite(yvals)]
+    ymax = max(5.0, float(np.nanmax(finite_yvals)) * 1.25 if finite_yvals.size else 5.0)
+
+    bar_width = 0.38
+    fig, axes = plt.subplots(3, 3, figsize=(21, 15.5), sharey=True)
+    for r, (scheme_name, edges, labels) in enumerate(bin_schemes):
+        for c, cohort_name in enumerate(["Whole cohort", "Test cohort", "Training cohort"]):
+            ax = axes[r, c]
+            s = incidence_by_point_strata.query(
+                "scheme == @scheme_name and cohort == @cohort_name"
+            ).copy()
+            x = np.arange(len(s))
+            has_patients = s["n"].to_numpy(dtype=int) > 0
+            observed = np.where(has_patients, s["observed_incidence_pct"].to_numpy(dtype=float), np.nan)
+            predicted = np.where(has_patients, s["predicted_incidence_pct"].to_numpy(dtype=float), np.nan)
+            ax.bar(x - bar_width / 2, observed, width=bar_width, color=ACCENT_RED, label="Observed")
+            ax.bar(x + bar_width / 2, predicted, width=bar_width, color="#4C78A8", label="Predicted")
+            tick_labels = [f"{lab}\nn={int(n)}" for lab, n in zip(labels, s["n"].to_numpy(dtype=int))]
+            ax.set_xticks(x)
+            ax.set_xticklabels(tick_labels, rotation=45 if len(labels) > 5 else 0,
+                                ha="right" if len(labels) > 5 else "center")
+            ax.set_ylim(0, ymax)
+            ax.yaxis.set_major_formatter(PercentFormatter(xmax=100, decimals=0))
+            ax.set_title(f"{cohort_name} — {scheme_name}")
+            if c == 0:
+                ax.set_ylabel("Urgent-MCS incidence")
+            if r == len(bin_schemes) - 1:
+                ax.set_xlabel("Deployable-model point stratum")
+            if r == 0 and c == 0:
+                ax.legend(loc="upper left")
+            style_axis(ax)
+    fig.suptitle("Figure 18. Observed vs predicted urgent-MCS incidence by deployable-model point strata",
+                 y=1.01, fontsize=16)
+    fig.tight_layout()
+    fig.savefig(os.path.join(plots_dir, "deployable_observed_predicted_incidence_by_point_strata.png"), dpi=300)
+    fig.savefig(os.path.join(plots_dir, "deployable_observed_predicted_incidence_by_point_strata.pdf"))
+    plt.close(fig)
+
+    # Standalone plot: 7-point strata, whole cohort only
+    scheme_name, cohort_name, ymax7 = "7-point strata", "Whole cohort", 7.0
+    s = incidence_by_point_strata.query("scheme == @scheme_name and cohort == @cohort_name").copy()
+    x = np.arange(len(s))
+    has_patients = s["n"].to_numpy(dtype=int) > 0
+    observed = np.where(has_patients, s["observed_incidence_pct"].to_numpy(dtype=float), np.nan)
+    predicted = np.where(has_patients, s["predicted_incidence_pct"].to_numpy(dtype=float), np.nan)
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.bar(x - bar_width / 2, observed, width=bar_width, color=ACCENT_RED, label="Observed")
+    ax.bar(x + bar_width / 2, predicted, width=bar_width, color="#4C78A8", label="Predicted")
+    tick_labels = [f"{lab}\nn={int(n)}" for lab, n in zip(s["point_stratum"].astype(str), s["n"].to_numpy(dtype=int))]
+    ax.set_xticks(x)
+    ax.set_xticklabels(tick_labels)
+    ax.set_ylim(0, ymax7)
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=100, decimals=0))
+    ax.set_ylabel("Urgent-MCS incidence")
+    ax.set_xlabel("Deployable-model point stratum")
+    ax.legend(loc="upper left")
+    style_axis(ax)
+    fig.tight_layout()
+    fig.savefig(os.path.join(plots_dir, "deployable_observed_predicted_incidence_7point_whole_cohort.png"), dpi=300)
+    fig.savefig(os.path.join(plots_dir, "deployable_observed_predicted_incidence_7point_whole_cohort.pdf"))
+    plt.close(fig)
+
+    print("\nOBSERVED VS PREDICTED INCIDENCE BY DEPLOYABLE POINT STRATA:")
+    print(incidence_by_point_strata[[
+        "scheme", "cohort", "point_stratum", "n", "events",
+        "observed_incidence_pct", "predicted_incidence_pct",
+    ]].round(2).to_string(index=False))
+
+    return point_counts_by_cohort, incidence_by_point_strata
 
 
 # ===================================================================
@@ -834,6 +1205,9 @@ def run(
     pub_vars=None,
     pub_pts=None,
     published_betas=None,
+    deployable_variant="flic",
+    benchmark_model="ExtraTrees",
+    use_synth_if_missing=True,
 ):
     if k_grid is None:
         k_grid = [10, 15, 25, "all"]
@@ -853,6 +1227,16 @@ def run(
     plots_dir = os.path.join(outdir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
     cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
+
+    # ── 0b. Sample-size adequacy — pmsampsize  (item 8) ──
+    print("=" * 60)
+    print("0b. Sample-size adequacy — pmsampsize  (item 8)")
+    print("=" * 60)
+    results_dict["pmsampsize_grid"] = print_pmsampsize_grid(n_predictors=len(pre_specified_predictors))
+
+    if use_synth_if_missing and not os.path.exists(data_path):
+        print(f"\n{data_path} not found -> generating SYNTHETIC cohort for a dry run.\n")
+        make_synth(path=data_path)
 
     # ── 1. Load & prepare data ──
     print("=" * 60)
@@ -943,36 +1327,19 @@ def run(
 
     deployable = Pipeline([
         ("prep", prep_prespec),
-        ("model", FirthLogisticRegression()),
+        ("model", FirthLogisticRegression(variant=deployable_variant)),
     ])
-
-    # ExtraTrees benchmark
-    et = Pipeline([
-        ("prep", clone(prep_prespec)),
-        ("model", ExtraTreesClassifier(n_estimators=400, random_state=random_state, n_jobs=-1)),
-    ])
-    et_grid = {
-        "model__max_depth": [6, 10, None],
-        "model__min_samples_leaf": [5, 20],
-        "model__max_features": ["sqrt", 0.5, 1.0],
-    }
-    gs_et = GridSearchCV(et, et_grid, scoring="roc_auc", cv=cv, n_jobs=-1).fit(X_train, y_train)
     deployable.fit(X_train, y_train)
-
-    best_estimators = {
-        "LogReg_Firth": deployable,
-        "ExtraTrees": gs_et.best_estimator_,
-    }
 
     dep_oof = cross_val_predict(
         clone(deployable), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1,
     )[:, 1]
-    print(f"\nLogReg_Firth CV AUC: {roc_auc_score(y_train, dep_oof):.3f}")
-    print(f"ExtraTrees CV AUC:   {gs_et.best_score_:.3f}  {gs_et.best_params_}")
+    print(f"\nLogReg_Firth CV AUC: {roc_auc_score(y_train, dep_oof):.3f}  "
+          f"(benchmark is selected AFTER the bake-off, by OOF AUC)")
 
-    # ── 5a. Multi-model bake-off (with boxplot + PR curves) ──
+    # ── 5a. Multi-model bake-off (single pass — reused for boxplot, PR curves, benchmark) ──
     zoo, _ = _model_zoo(y_train, fast_mode=fast_mode)
-    bakeoff_results = run_bakeoff(
+    bakeoff_results, oof_scores_all, test_scores_all, cv_folds_all, fitted_best = run_bakeoff(
         X_train, y_train, X_test, y_test, prep_prespec, zoo, cv,
         random_state=random_state,
     )
@@ -981,32 +1348,38 @@ def run(
         y_train,
         cross_val_predict(clone(deployable), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1)[:, 1],
     ))
-    bakeoff_results = pd.concat([
-        bakeoff_results,
-        pd.DataFrame([{
-            "model": "LogReg_Firth",
-            "cv_auc": round(dep_cv_auc, 3),
-            "test_auc": round(float(roc_auc_score(y_test, dep_test_pred)), 3),
-            "test_lo": np.nan,
-            "test_hi": np.nan,
-        }]),
-    ], ignore_index=True).sort_values("cv_auc", ascending=False).reset_index(drop=True)
-    bakeoff_results.to_csv(os.path.join(outdir, "bakeoff_results.csv"), index=False)
-    print("\nBake-off summary (sorted by CV AUC):")
-    print(bakeoff_results.round(3).to_string(index=False))
-
-    # Boxplot
-    order = bakeoff_results["model"].tolist()
-    cv_folds_all = {}
-    for name, (est, grid) in zoo.items():
-        pipe = Pipeline([("prep", prep_prespec), ("model", est)])
-        gs = GridSearchCV(pipe, grid, scoring="roc_auc", cv=cv, n_jobs=-1, refit=True).fit(X_train, y_train)
-        cv_folds_all[name] = cross_val_score(clone(gs.best_estimator_), X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
+    oof_scores_all["LogReg_Firth"] = dep_oof
+    test_scores_all["LogReg_Firth"] = dep_test_pred
     cv_folds_all["LogReg_Firth"] = np.array([
         roc_auc_score(y_train.iloc[te],
             clone(deployable).fit(X_train.iloc[tr], y_train.iloc[tr]).predict_proba(X_train.iloc[te])[:, 1])
         for tr, te in cv.split(X_train, y_train)
     ])
+    bakeoff_results = pd.concat([
+        bakeoff_results,
+        pd.DataFrame([{
+            "model": "LogReg_Firth",
+            "cv_auc": round(dep_cv_auc, 3),
+            "oof_auc": round(float(roc_auc_score(y_train, dep_oof)), 3),
+            "test_auc": round(float(roc_auc_score(y_test, dep_test_pred)), 3),
+            "test_lo": np.nan,
+            "test_hi": np.nan,
+        }]),
+    ], ignore_index=True).sort_values("oof_auc", ascending=False).reset_index(drop=True)
+    bakeoff_results.to_csv(os.path.join(outdir, "bakeoff_results.csv"), index=False)
+    print("\nBake-off summary (sorted by out-of-fold AUC):")
+    print(bakeoff_results.round(3).to_string(index=False))
+
+    order = bakeoff_results["model"].tolist()
+    TOP3 = [m for m in order if m != "LogReg_Firth"][:3]
+    fitted_best["LogReg_Firth"] = deployable
+    bench = benchmark_model if benchmark_model in fitted_best else [m for m in order if m != "LogReg_Firth"][0]
+    best_estimators = {"LogReg_Firth": deployable, bench: fitted_best[bench]}
+    print(f"\nTop-3 by out-of-fold AUC: {TOP3} -> compared head-to-head with LogReg_Firth in 5b.")
+    print(f"Carried models: {list(best_estimators)} | benchmark = {bench} "
+          f"(OOF AUC {roc_auc_score(y_train, oof_scores_all[bench]):.3f})")
+
+    # Boxplot
     box_colors = ["#4BA3D3", "#E5A93C", "#59B894", "#D9A35F", "#C18AC5",
                   "#C99A72", "#E9A6D2", "#A6A6A6", "#F2E768", "#75B8DE",
                   "#4D9BC7", "#E2A13C"]
@@ -1031,20 +1404,8 @@ def run(
     fig.tight_layout()
     fig.savefig(os.path.join(plots_dir, "bakeoff_boxplot.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
-    TOP3 = [m for m in order if m != "LogReg_Firth"][:3]
-    print(f"\nTop-3 by CV AUC: {TOP3}")
 
     # PR curves
-    oof_scores_all = {}
-    test_scores_all = {}
-    for name, (est, grid) in zoo.items():
-        pipe = Pipeline([("prep", prep_prespec), ("model", est)])
-        gs = GridSearchCV(pipe, grid, scoring="roc_auc", cv=cv, n_jobs=-1, refit=True).fit(X_train, y_train)
-        best = gs.best_estimator_
-        oof_scores_all[name] = cross_val_predict(clone(best), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1)[:, 1]
-        test_scores_all[name] = best.predict_proba(X_test)[:, 1]
-    oof_scores_all["LogReg_Firth"] = cross_val_predict(clone(deployable), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1)[:, 1]
-    test_scores_all["LogReg_Firth"] = deployable.predict_proba(X_test)[:, 1]
     models_pr = list(oof_scores_all)
     colors_pr = model_color_map(models_pr)
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -1135,7 +1496,7 @@ def run(
     ksweep = []
     for k in range(3, len(order_pars) + 1):
         cols = order_pars[:k]
-        oofk = cross_val_predict(_firth_pipe(cols, binary, categorical, continuous),
+        oofk = cross_val_predict(_firth_pipe(cols, binary, categorical, continuous, variant=deployable_variant),
                                  X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1)[:, 1]
         ksweep.append({
             "k": k, "added": cols[-1], "epv": round(int(y_train.sum()) / k, 1),
@@ -1166,7 +1527,7 @@ def run(
     print("=" * 60)
     mc = run_marginal_contribution(
         X_train[ps_present], y_train, ps_present, binary, categorical, continuous, cv,
-        random_state=random_state,
+        random_state=random_state, variant=deployable_variant,
     )
     mc.to_csv(os.path.join(outdir, "marginal_contribution.csv"), index=False)
 
@@ -1183,15 +1544,22 @@ def run(
     disc.to_csv(os.path.join(outdir, "discrimination.csv"), index=False)
     results_dict["discrimination"] = disc.to_dict(orient="records")
 
+    # ---- data-driven pmsampsize verdict (Section 0b tail) ----
+    results_dict["pmsampsize_data_driven"] = print_pmsampsize_verdict(
+        prevalence=float(y.mean()), n_predictors=len(ps_present),
+        oof_auc=float(roc_auc_score(y_train, oof_pred["LogReg_Firth"])),
+        n_dev=len(y_train), events_dev=int(y_train.sum()),
+    )
+
     # ── Comparison plots ──
     dep_oof = oof_pred["LogReg_Firth"]
-    et_oof = oof_pred["ExtraTrees"]
+    bench_oof = oof_pred[bench]
     _plot_bakeoff_auc(
         bakeoff_results[bakeoff_results["model"] != "LogReg_Firth"],
         dep_cv_auc, plots_dir,
     )
-    _plot_comparison_roc(dep_oof, et_oof, y_train, "ExtraTrees", plots_dir)
-    _plot_comparison_calibration(dep_oof, et_oof, y_train, "ExtraTrees", plots_dir)
+    _plot_comparison_roc(dep_oof, bench_oof, y_train, bench, plots_dir)
+    _plot_comparison_calibration(dep_oof, bench_oof, y_train, bench, plots_dir)
 
     # ── 7. Calibration ──
     print("=" * 60)
@@ -1248,7 +1616,7 @@ def run(
     print("=" * 60)
     auc_mi, slope_mi = run_mice_sensitivity(
         X_train[ps_present], y_train, ps_cont, ps_bin, ps_cat,
-        random_state=random_state, cv_splits=cv_splits,
+        random_state=random_state, cv_splits=cv_splits, variant=deployable_variant,
     )
     results_dict["mice_sensitivity"] = {
         "oof_auc_mi": auc_mi,
@@ -1272,26 +1640,49 @@ def run(
     print("=" * 60)
     print("14. Full model specification  (items 22, 12g)")
     print("=" * 60)
-    _, prep_f, fl = save_specification(deployable, outdir, X[ps_present], y)
-    compute_point_score(
-        deployable, prep_f, fl,
-        score_increments, points_max, outdir, ps_cont=ps_cont,
-    )
-    save_risk_equation(deployable, prep_f, fl, outdir)
 
-    # Shrinkage
+    # Uniform shrinkage: optimism-corrected calibration slope (bootstrap), with a van Houwelingen
+    # heuristic fallback computed on the FULL derivation cohort — matches notebook Section 14.
     shrink_boot = opt["slope_corrected"]
-    Zf = prep_f.transform(X_train[ps_present])
+    prep_vh = clone(prep_prespec).fit(X[ps_present])
+    Zfull = prep_vh.transform(X[ps_present])
     try:
-        mf = sm.Logit(y_train.to_numpy(), sm.add_constant(Zf)).fit(disp=False)
+        mf = sm.Logit(y.to_numpy(), sm.add_constant(Zfull)).fit(disp=False)
         chi2 = float(2 * (mf.llf - mf.llnull))
-        vh = (chi2 - Zf.shape[1]) / chi2 if chi2 > 0 else float("nan")
+        vh = (chi2 - Zfull.shape[1]) / chi2 if chi2 > 0 else float("nan")
     except Exception:
         vh = float("nan")
-    print(f"\nSHRINKAGE:")
-    print(f"  Uniform shrinkage (bootstrap corrected slope): {shrink_boot:.3f}")
-    print(f"  van Houwelingen heuristic shrinkage: {vh:.3f}")
-    results_dict["shrinkage"] = {"uniform_bootstrap": shrink_boot, "van_houwelingen": vh}
+    shrinkage_factor = shrink_boot if (np.isfinite(shrink_boot) and 0 < shrink_boot <= 1) else (
+        vh if np.isfinite(vh) else 1.0
+    )
+    shrinkage_factor = float(min(1.0, max(0.5, shrinkage_factor)))
+    print(f"Shrinkage: bootstrap slope={shrink_boot:.3f}, van Houwelingen={vh:.3f} "
+          f"-> applied factor={shrinkage_factor:.3f}")
+
+    # SHIPPED deployable: Firth ORs -> variant intercept correction -> uniform shrinkage,
+    # refit on the full derivation cohort.
+    final_lr_template = Pipeline([
+        ("prep", clone(prep_prespec)),
+        ("model", FirthLogisticRegression(variant=deployable_variant, shrinkage=shrinkage_factor)),
+    ])
+    _, final_lr = save_specification(final_lr_template, outdir, X[ps_present], y)
+    _, ref = compute_point_score(
+        final_lr, score_increments, points_max, outdir, ps_cont=ps_cont,
+    )
+    save_risk_equation(final_lr, outdir)
+    results_dict["shrinkage"] = {
+        "bootstrap": shrink_boot, "van_houwelingen": vh, "applied": shrinkage_factor,
+    }
+
+    # ── 14b. Sensitivity — reduced model dropping age & occlusion length  (items 12, 23a) ──
+    print("=" * 60)
+    print("14b. Sensitivity — reduced model (drop age & occlusion length)")
+    print("=" * 60)
+    results_dict["reduced_model_sensitivity"] = run_reduced_model_sensitivity(
+        X[ps_present], y, X_train[ps_present], y_train, X_test[ps_present], y_test,
+        ps_present, dep_oof, binary, categorical, continuous, cv, outdir,
+        variant=deployable_variant,
+    )
 
     # ── 15. Open science ──
     from bakeoff.analysis import save_open_science
@@ -1311,10 +1702,11 @@ def run(
     print("=" * 60)
     print("Save deployable model")
     print("=" * 60)
-    final_lr = clone(deployable).fit(X[ps_present], y)
     model_path = os.path.join(outdir, "final_logreg_firth.pkl")
     metadata = {
         "model_name": "LogReg_Firth",
+        "variant": deployable_variant,
+        "shrinkage": shrinkage_factor,
         "predictors": ps_present,
         "binary": ps_bin,
         "continuous": ps_cont,
@@ -1334,12 +1726,23 @@ def run(
     print("=" * 60)
     save_results(results_dict, outdir)
 
+    # ── 18. Observed vs predicted incidence by deployable point strata ──
+    print("=" * 60)
+    print("18. Observed vs predicted incidence by deployable point strata")
+    print("=" * 60)
+    point_counts, incidence_by_point_strata = plot_incidence_by_point_strata(
+        final_lr, ref, X[ps_present], y, X_train[ps_present], X_test[ps_present], outdir, plots_dir,
+    )
+    results_dict["deployable_patient_counts_by_exact_point"] = point_counts.to_dict(orient="records")
+    results_dict["deployable_incidence_by_point_strata"] = incidence_by_point_strata.to_dict(orient="records")
+    save_results(results_dict, outdir)  # re-save so the Section 18 tables are included
+
     # ── Final summary ──
     print()
     print("=" * 60)
     print("DONE — Outputs in", outdir)
     print("=" * 60)
-    return deployable
+    return final_lr
 
 
 if __name__ == "__main__":
@@ -1364,4 +1767,7 @@ if __name__ == "__main__":
         pub_vars=tripod.get("pub_vars", {}),
         pub_pts=tripod.get("pub_pts", {}),
         published_betas=tripod.get("published_betas", None),
+        deployable_variant=tripod.get("deployable_variant", "flic"),
+        benchmark_model=tripod.get("benchmark_model", "ExtraTrees"),
+        use_synth_if_missing=tripod.get("use_synth_if_missing", True),
     )

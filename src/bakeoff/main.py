@@ -72,6 +72,9 @@ def main():
         pub_vars=tripod.get("pub_vars", {}),
         pub_pts=tripod.get("pub_pts", {}),
         published_betas=tripod.get("published_betas", None),
+        deployable_variant=tripod.get("deployable_variant", "flic"),
+        benchmark_model=tripod.get("benchmark_model", "ExtraTrees"),
+        use_synth_if_missing=tripod.get("use_synth_if_missing", True),
     )
 
 

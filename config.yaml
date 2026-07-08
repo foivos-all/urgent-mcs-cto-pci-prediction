@@ -31,6 +31,9 @@ redundant_groups:
 
 tripod:
   deployable_model: "LogReg_Firth"
+  deployable_variant: "flic"    # firth | flic | flac (flic = Firth ORs + ML-corrected intercept)
+  benchmark_model: "ExtraTrees"
+  use_synth_if_missing: true    # build a synthetic cohort if data_path is absent (dry run only)
   tripod_output_dir: "tripod_outputs"
   exclude_planned_mcs: true
   planned_mcs_col: "lv_assist2_aae___1"
