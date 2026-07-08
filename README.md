@@ -1,8 +1,8 @@
 # Prediction of Urgent Mechanical Circulatory Support During Chronic Total Occlusion Percutaneous Coronary Intervention
 
-Full TRIPOD+AI (2024)-compliant pipeline for urgent MCS prediction after CTO-PCI. Covers all 27 code-addressable TRIPOD+AI items; reproduces the analyses in the companion notebook.
+Pipeline for urgent MCS prediction after CTO-PCI, reproducing the analyses in the companion notebook. The manuscript's Supplementary Table S1 is the source of truth for TRIPOD+AI (2024) reporting — this repository is the underlying analysis code.
 
-**Deployable model**: Firth penalized logistic regression on 8 pre-specified predictors, calibrated for deployment with FLIC (intercept correction) and a uniform-shrinkage factor derived from bootstrap optimism correction (item 22).
+**Deployable model**: Firth penalized logistic regression on 8 pre-specified predictors, calibrated for deployment with FLIC (intercept correction) and a uniform-shrinkage factor derived from bootstrap optimism correction.
 
 **Benchmark**: The strongest model, by out-of-fold AUC, from a 12-algorithm bake-off on the same pre-specified predictor set (ExtraTrees by default — configurable via `benchmark_model`). Kept only as a discrimination ceiling; the full TRIPOD battery (calibration, DCA, optimism, heterogeneity, fairness, specification) is run for the deployable model only.
 
@@ -93,8 +93,6 @@ Edit `config.yaml` in the project root. Top-level keys control the full pipeline
 uv run python -m bakeoff.main
 ```
 
-This runs all 24 sections matching the companion notebook (there's no Section 13, by design, matching the notebook's own numbering).
-
 #### Options
 
 ```bash
@@ -108,32 +106,31 @@ uv run python -m bakeoff.main --config /path/to/config.yaml
 
 ## Pipeline sections
 
-| Section | TRIPOD item | Description | Output |
-|---|---|---|---|
-| 0b | 8 | Sample-size adequacy — pmsampsize a-priori grid (data-driven verdict repeated after Section 6) | Console |
-| 1 | 5, 6 | Data loading, cohort derivation, physiologic cleaning | Console |
-| 2 | 7 | Variable typing (binary / categorical / continuous) | `variable_typing.csv` |
-| 2b | 20 | Table 1 — participant characteristics by outcome | `table1.csv` |
-| 3 | 9 | Missing data table | `missingness.csv` |
-| 4 | 8 | 80/20 split, EPV | Console |
-| 5a | 12, 13, 15 | Train Firth LR (deployable) + single-pass 12-model bake-off; benchmark selected by out-of-fold AUC | `bakeoff_results.csv`, `precision_recall.csv` |
-| 5b | 12g | Why Firth — discrimination vs calibration for the top-3 bake-off models + Firth | `why_firth_table.csv` |
-| 5c | — | Parsimony sweep — Firth over the pre-specified clinical-priority order | `firth_k_sweep.csv` |
-| 5d | — | Marginal contribution — leave-one-out Firth LR | `marginal_contribution.csv` |
-| 6 | 12e, 23a | Discrimination — OOF AUC, repeated CV, test AUC, data-driven pmsampsize verdict | `discrimination.csv` |
-| 7 | 12e, 12f | Calibration — intercept, slope, Brier, plot | `plots/calibration_curve.png` |
-| 8 | 12e | Decision-curve analysis | `plots/dca_curve.png` |
-| 9 | 12 | Bootstrap optimism correction (AUC + calibration slope) | Console |
-| 10 | 23b | Site-clustered (GroupKFold, capped at 10 folds) + temporal split | Console |
-| 11 | 14, 23a | Fairness — subgroup AUC across 20+ strata | `subgroup_performance.csv` |
-| 11b | 9, 12 | MICE sensitivity — IterativeImputer | Console |
-| 12 | 12, 23a | External comparison — PROGRESS-CTO + DeLong | `delong_comparison.csv` |
-| 14 | 22, 12g | Odds ratios (Firth-only), point score, risk equation (deployed FLIC + shrinkage coefficients) | 3 CSV files + equation |
-| 14b | 12, 23a | Sensitivity — reduced model dropping age & occlusion length, DeLong vs the full 8-predictor model | `reduced_model_specification.csv` |
-| 15 | 18 | Open science — environment info | `environment.json` |
-| 16 | — | TRIPOD+AI 27-item checklist | `tripod_ai_checklist.csv` |
-| 17 | — | Save all results | `results.json` |
-| 18 | — | Observed vs predicted incidence by deployable-model point strata (whole/test/training cohorts, 3 bin schemes) | `deployable_patient_counts_by_exact_point.csv`, `deployable_observed_predicted_incidence_by_point_strata.csv` + 2 plots (png + pdf each) |
+| Section | Description | Output |
+|---|---|---|
+| 0b | Sample-size adequacy — pmsampsize a-priori grid (data-driven verdict repeated after Section 6) | Console |
+| 1 | Data loading, cohort derivation, physiologic cleaning | Console |
+| 2 | Variable typing (binary / categorical / continuous) | `variable_typing.csv` |
+| 2b | Table 1 — participant characteristics by outcome | `table1.csv` |
+| 3 | Missing data table | `missingness.csv` |
+| 4 | 80/20 split, EPV | Console |
+| 5a | Train Firth LR (deployable) + single-pass 12-model bake-off; benchmark selected by out-of-fold AUC | `bakeoff_results.csv`, `precision_recall.csv` |
+| 5b | Why Firth — discrimination vs calibration for the top-3 bake-off models + Firth | `why_firth_table.csv` |
+| 5c | Parsimony sweep — Firth over the pre-specified clinical-priority order | `firth_k_sweep.csv` |
+| 5d | Marginal contribution — leave-one-out Firth LR | `firth_leave_one_out.csv`, `plots/firth_loo.png` |
+| 6 | Discrimination — OOF AUC, repeated CV, test AUC, data-driven pmsampsize verdict | `discrimination.csv` |
+| 7 | Calibration — intercept, slope, Brier, plot | `plots/calibration_curve.png` |
+| 8 | Decision-curve analysis | `plots/dca_curve.png` |
+| 9 | Bootstrap optimism correction (AUC + calibration slope) | Console |
+| 10 | Site-clustered (GroupKFold, capped at 10 folds) + temporal split | Console |
+| 11 | Fairness — subgroup AUC across 20+ strata | `subgroup_performance.csv` |
+| 11b | MICE sensitivity — IterativeImputer | Console |
+| 12 | External comparison — PROGRESS-CTO + DeLong | `delong_comparison.csv` |
+| 14 | Odds ratios (Firth-only), point score, risk equation (deployed FLIC + shrinkage coefficients) | 3 CSV files + equation |
+| 14b | Sensitivity — reduced model dropping age & occlusion length, DeLong vs the full 8-predictor model | `reduced_model_specification.csv` |
+| 15 | Open science — environment info | `environment.json` |
+| 17 | Save all results | `results.json` |
+| 18 | Observed vs predicted incidence by deployable-model point strata (whole/test/training cohorts, 3 bin schemes) | `deployable_patient_counts_by_exact_point.csv`, `deployable_observed_predicted_incidence_by_point_strata.csv` + 2 plots (png + pdf each) |
 
 ### Model calibration
 

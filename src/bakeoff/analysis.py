@@ -441,48 +441,6 @@ def save_open_science(output_dir):
     print("\nOPEN SCIENCE — environment saved to environment.json")
 
 
-# ---------------------------------------------------------------------------
-# 16. TRIPOD+AI checklist  (all 27 items)
-# ---------------------------------------------------------------------------
-
-def generate_checklist(output_dir):
-    checklist = [
-        ("1 Title", "MANUSCRIPT", "development+validation prediction-model study"),
-        ("2 Abstract", "MANUSCRIPT", "TRIPOD+AI for Abstracts"),
-        ("3 Background", "MANUSCRIPT", "prior urgent-MCS score; BCIS-3 context"),
-        ("4 Objectives", "MANUSCRIPT", "development & validation objective"),
-        ("5 Data source/eligibility", "CODE", "Section 1: derivation cohort (prophylactic-MCS excluded); flow"),
-        ("6 Outcome", "CODE", "Section 1"),
-        ("7 Predictors", "CODE", "Section 2 typing + pre-procedural audit"),
-        ("8 Sample size", "CODE", "Section 4 EPV"),
-        ("9 Missing data", "CODE", "Section 3"),
-        ("10 Data preparation", "CODE", "Sections 2/4"),
-        ("11 Model type / candidates", "CODE", "Sec 0/5: pre-specified Firth/FLIC (deployable) + ExtraTrees benchmark; EPV rationale"),
-        ("12 Analytical methods", "CODE", "Sections 5-9,12 incl. external comparison"),
-        ("13 Class imbalance", "CODE", "Firth Jeffreys penalty + FLIC/FLAC calibration; no resampling"),
-        ("14 Fairness", "CODE", "Section 11"),
-        ("15 Model output", "CODE", "Section 5: probability"),
-        ("16 Risk groups", "PARTIAL", "Section 14 point score -> define cut-points in manuscript"),
-        ("17 Evaluation/validation design", "CODE", "Sections 6,9,10"),
-        ("18 Open science", "PARTIAL", "Section 15"),
-        ("19 Patient & public involvement", "MANUSCRIPT", "describe PPI or state none"),
-        ("20 Participants/Table 1", "CODE", "Section 1b"),
-        ("21 Participants & events per analysis", "CODE", "Sections 1,4,6"),
-        ("22 Model specification", "CODE", "Sec 14: deployable Firth/FLIC — equation+OR+points+shrinkage"),
-        ("23a Performance + subgroups + comparison", "CODE", "Sec 6-12 on deployable; ExtraTrees/published as benchmarks (DeLong, OOF + test)"),
-        ("23b Heterogeneity across clusters", "CODE", "Section 10 site & temporal"),
-        ("24 Model updating", "PARTIAL", "Sec 7 recalibration + Sec 14 shrinkage factor"),
-        ("25 Usability/implementation", "MANUSCRIPT", "how clinicians apply the score"),
-        ("26 Interpretation/limitations", "MANUSCRIPT", "EPV, prophylactic bias, temporal drift"),
-        ("27 Supplementary/future work", "MANUSCRIPT", "LVEF-alone vs multivariable question"),
-    ]
-    ck = pd.DataFrame(checklist, columns=["item", "status", "where"])
-    ck.to_csv(os.path.join(output_dir, "tripod_ai_checklist.csv"), index=False)
-    print("\nTRIPOD+AI CHECKLIST (all 27 items):")
-    print(ck.to_string(index=False))
-    print("\nCounts:", ck["status"].value_counts().to_dict())
-    return ck
-
 
 # ---------------------------------------------------------------------------
 # 17. Save results to JSON

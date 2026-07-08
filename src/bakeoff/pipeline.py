@@ -1660,13 +1660,6 @@ def run(
     print("=" * 60)
     save_open_science(outdir)
 
-    # ── 16. TRIPOD+AI checklist ──
-    from bakeoff.analysis import generate_checklist
-    print("=" * 60)
-    print("16. TRIPOD+AI checklist coverage")
-    print("=" * 60)
-    generate_checklist(outdir)
-
     # ── Save deployable model ──
     print("=" * 60)
     print("Save deployable model")
