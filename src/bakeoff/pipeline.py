@@ -1196,7 +1196,6 @@ def run(
     n_boot_optimism=500,
     n_repeated_cv=20,
     cat_max_levels=20,
-    k_grid=None,
     fast_mode=False,
     score_increments=None,
     points_max=10,
@@ -1209,8 +1208,6 @@ def run(
     benchmark_model="ExtraTrees",
     use_synth_if_missing=True,
 ):
-    if k_grid is None:
-        k_grid = [10, 15, 25, "all"]
     if yesno_na_vars is None:
         yesno_na_vars = []
     if redundant_groups is None:

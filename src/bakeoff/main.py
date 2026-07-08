@@ -63,7 +63,6 @@ def main():
         n_boot_optimism=args.n_boot_optimism or tripod.get("n_boot_optimism", 500),
         n_repeated_cv=cfg.get("n_repeated_cv", 20),
         cat_max_levels=cfg.get("cat_max_levels", 20),
-        k_grid=cfg.get("k_grid", [10, 15, 25, "all"]),
         fast_mode=args.fast_mode if args.fast_mode is not None else cfg.get("fast_mode", False),
         score_increments=tripod.get("score_increments", {}),
         points_max=tripod.get("points_max", 10),

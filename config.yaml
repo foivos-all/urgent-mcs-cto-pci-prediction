@@ -8,8 +8,6 @@ n_repeated_cv: 20
 cat_max_levels: 20
 fast_mode: false
 
-k_grid: [10, 15, 25, "all"]
-
 yesno_na_vars:
   - "use_of_acei"
   - "use_of_arb"

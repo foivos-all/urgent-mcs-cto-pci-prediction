@@ -57,7 +57,6 @@ Edit `config.yaml` in the project root. Top-level keys control the full pipeline
 | `n_repeated_cv` | `20` | Repeats for the repeated-CV discrimination check (Section 6 only — the 12-model bake-off itself is tuned with a single, non-repeated `cv_splits`-fold split) |
 | `cat_max_levels` | `20` | Max levels for categorical detection |
 | `fast_mode` | `false` | Skip SVM/MLP, reduce bootstraps |
-| `k_grid` | `[10, 15, 25, "all"]` | Reserved for future feature-count sweeps; not currently used by any pipeline step |
 | `yesno_na_vars` | _(10 vars)_ | Columns with 1=yes/2=no/3=NA coding |
 | `redundant_groups` | _(5 groups)_ | Collinear groups for redundancy reduction |
 
