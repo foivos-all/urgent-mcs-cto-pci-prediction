@@ -37,7 +37,7 @@ from sklearn.metrics import (
     precision_recall_curve,
     brier_score_loss,
 )
-from sklearn.calibration import calibration_curve
+from sklearn.calibration import calibration_curve, CalibratedClassifierCV
 from sklearn.base import clone
 
 import seaborn as sns
@@ -529,7 +529,7 @@ def _model_zoo(y_train, fast_mode=False):
     zoo = {
         "LogReg_L1L2": (
             LogisticRegression(solver="liblinear", class_weight=None, max_iter=5000, random_state=RS),
-            {"model__penalty": ["l1", "l2"], "model__C": [0.01, 0.1, 1.0]},
+            {"model__l1_ratio": [0.0, 1.0], "model__C": [0.01, 0.1, 1.0]},  # l1_ratio: 0=L2, 1=L1
         ),
         "NB_Gaussian": (GaussianNB(), {"model__var_smoothing": [1e-9, 1e-7, 1e-5]}),
         "NB_Bernoulli": (
@@ -554,7 +554,10 @@ def _model_zoo(y_train, fast_mode=False):
     zoo["AdaBoost"] = (AdaBoostClassifier(n_estimators=200, random_state=RS), {"model__n_estimators": [100, 200], "model__learning_rate": [0.5, 1.0]})
     zoo["HistGBM"] = (HistGradientBoostingClassifier(max_iter=400, class_weight=None, random_state=RS), {"model__learning_rate": [0.03, 0.1], "model__l2_regularization": [0.0, 1.0, 5.0]})
     if not fast_mode:
-        zoo["SVM"] = (SVC(probability=True, class_weight=None, random_state=RS), {"model__C": [1.0, 10.0], "model__gamma": ["scale"]})
+        zoo["SVM"] = (
+            CalibratedClassifierCV(SVC(class_weight=None, random_state=RS), ensemble=False),
+            {"model__estimator__C": [1.0, 10.0], "model__estimator__gamma": ["scale"]},
+        )
         zoo["MLP"] = (MLPClassifier(max_iter=400, early_stopping=True, n_iter_no_change=10, random_state=RS), {"model__alpha": [1e-4, 1e-2], "model__hidden_layer_sizes": [(32, 16), (64, 32, 16)]})
     return zoo, _spw
 
@@ -710,58 +713,70 @@ def evaluate_discrimination(
 # ===================================================================
 
 def plot_calibration(y, oof_pred, plots_dir, label="LogReg_Firth"):
+    """Matches the notebook's published calibration figure exactly (cell 34): a fixed
+    2.5%-of-probability axis (tuned for this cohort's low event rate), percent-formatted
+    ticks, and an in-plot 'Intercept = / Slope =' annotation rather than a title."""
     intercept, slope, brier = _cal_metrics(y, oof_pred)
-    base = float(y.mean())
-    fig, ax = plt.subplots(figsize=(6, 6))
+    cal_max = 0.025
+    fig = plt.figure(figsize=(6.5, 6))
+    ax = fig.add_axes([0.14, 0.14, 0.78, 0.78])
     fp, mp = calibration_curve(y, oof_pred, n_bins=10, strategy="quantile")
-    ax.plot(mp, fp, "o-", color=ACCENT_RED, lw=2.0, ms=7,
-            markerfacecolor=ACCENT_RED, markeredgecolor=ACCENT_RED,
-            label=f"{label} (slope {slope:.2f})")
-    mx = max(float(np.percentile(oof_pred, 99)), 0.05)
-    ax.plot([0, mx], [0, mx], color=MID_GREY, ls="--", lw=1.2)
-    ax.set_xlim(0, mx); ax.set_ylim(0, mx)
-    ax.set_xlabel("Predicted probability")
-    ax.set_ylabel("Observed frequency")
-    ax.set_title(f"intercept {intercept:.2f}, slope {slope:.2f}, Brier {brier:.4f}")
-    ax.legend(frameon=False)
+    ax.plot(mp, fp, "o-", color=ACCENT_RED, lw=2.0, ms=6)
+    ax.plot([0, cal_max], [0, cal_max], color=MID_GREY, ls="--", lw=1.2)
+    ax.set_xlim(0, cal_max)
+    ax.set_ylim(0, cal_max)
+    ax.xaxis.set_major_formatter(PercentFormatter(xmax=1))
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1))
+    ax.text(0.03, 0.95, f"Intercept = {intercept:.2f}\nSlope = {slope:.2f}",
+            transform=ax.transAxes, ha="left", va="top", fontsize=15)
+    ax.set_xlabel("Predicted probability", fontsize=15)
+    ax.set_ylabel("Observed frequency", fontsize=15)
+    ax.set_aspect("equal", adjustable="box")
     style_axis(ax)
-    fig.tight_layout()
     fig.savefig(os.path.join(plots_dir, "calibration_curve.png"), dpi=300)
     plt.close(fig)
     return intercept, slope, brier
 
 
-def plot_roc_curve(y, oof_pred, plots_dir, label="LogReg_Firth"):
-    fpr, tpr, _ = roc_curve(y, oof_pred)
-    auc_val = roc_auc_score(y, oof_pred)
-    fig, ax = plt.subplots(figsize=(6.5, 6))
-    ax.plot(fpr, tpr, color=ACCENT_RED, lw=2.4, label=f"{label} OOF (AUC {auc_val:.3f})")
+def plot_roc_curve(y_train, oof_pred, y_test, test_pred, plots_dir):
+    """Matches notebook cell 31 exactly: OOF (primary) + held-out test (confirmatory) ROC
+    overlaid, no title, equal aspect, legend lower right."""
+    fig = plt.figure(figsize=(6.5, 6))
+    ax = fig.add_axes([0.14, 0.14, 0.78, 0.78])
+    fpr, tpr, _ = roc_curve(y_train, oof_pred)
+    ax.plot(fpr, tpr, color=ACCENT_RED, lw=2.4, label=f"OOF (AUC {roc_auc_score(y_train, oof_pred):.3f})")
+    fprt, tprt, _ = roc_curve(y_test, test_pred)
+    ax.plot(fprt, tprt, color="#4C78A8", lw=1.8, ls="--", label=f"Test (AUC {roc_auc_score(y_test, test_pred):.3f})")
     ax.plot([0, 1], [0, 1], color=MID_GREY, ls="--", lw=1.2)
-    ax.set_xlabel("1 - Specificity"); ax.set_ylabel("Sensitivity")
-    ax.set_title("Out-of-fold ROC curve")
-    ax.legend(loc="lower right")
+    ax.set_xlabel("1 - Specificity", fontsize=15)
+    ax.set_ylabel("Sensitivity", fontsize=15)
+    ax.legend(loc="lower right", fontsize=15)
     style_axis(ax)
-    fig.tight_layout()
+    ax.set_aspect("equal", adjustable="box")
     fig.savefig(os.path.join(plots_dir, "roc_curve.png"), dpi=300)
     plt.close(fig)
 
 
-def plot_dca(y, oof_pred, plots_dir):
-    prev = float(y.mean())
+def plot_dca(y_train, oof_pred, y_test, test_pred, plots_dir):
+    """Matches notebook cell 36 exactly: OOF (primary) + held-out test (confirmatory) net
+    benefit overlaid — test-set net benefit is imprecise at this event count, so OOF leads."""
+    prev = float(np.mean(y_train))
     th = np.linspace(max(1e-4, prev / 10), min(0.20, max(0.05, prev * 10)), 300)
-    nb_m = _net_benefit(y, oof_pred, th)
+    nb_oof = _net_benefit(y_train, oof_pred, th)
+    nb_test = _net_benefit(y_test, test_pred, th)
     treat_all = prev - (1 - prev) * th / (1 - th)
     fig, ax = plt.subplots(figsize=(8.0, 5.5))
-    ax.plot(th * 100, nb_m, color=ACCENT_RED, linewidth=2.5, label="LogReg_Firth", zorder=4)
+    ax.plot(th * 100, nb_oof, color=ACCENT_RED, linewidth=2.5, label="Deployable (OOF)", zorder=4)
+    ax.plot(th * 100, nb_test, color="#4C78A8", linewidth=1.8, linestyle="--",
+            label="Deployable (test, confirmatory)", zorder=4)
     ax.plot(th * 100, treat_all, color=MID_GREY, linestyle="--", linewidth=1.5, label="Treat all", zorder=2)
     ax.axhline(0, color=DARK, linewidth=1.2, label="Treat none", zorder=3)
-    y_min = min(-0.0005, np.nanmin(nb_m) - 0.0003) if len(nb_m) else -0.0005
-    y_max = np.nanmax(nb_m) + 0.0005 if len(nb_m) else prev * 1.15
-    ax.set_ylim(y_min, y_max)
     ax.set_xlim(th.min() * 100, th.max() * 100)
+    both = np.concatenate([nb_oof, nb_test])
+    ax.set_ylim(min(-5e-4, float(np.nanmin(both)) - 3e-4), float(np.nanmax(both)) + 5e-4)
     ax.set_xlabel("Threshold probability (%)")
     ax.set_ylabel("Net benefit")
-    ax.set_title("Decision-curve analysis using out-of-fold predictions")
+    ax.set_title("Decision-curve analysis — OOF & test")
     ax.legend(loc="upper right")
     style_axis(ax)
     fig.tight_layout()
@@ -1255,10 +1270,6 @@ def run(
         random_state=random_state,
     )
     dep_test_pred = deployable.predict_proba(X_test)[:, 1]
-    dep_cv_auc = float(roc_auc_score(
-        y_train,
-        cross_val_predict(clone(deployable), X_train, y_train, cv=cv, method="predict_proba", n_jobs=-1)[:, 1],
-    ))
     oof_scores_all["LogReg_Firth"] = dep_oof
     test_scores_all["LogReg_Firth"] = dep_test_pred
     cv_folds_all["LogReg_Firth"] = np.array([
@@ -1266,6 +1277,9 @@ def run(
             clone(deployable).fit(X_train.iloc[tr], y_train.iloc[tr]).predict_proba(X_train.iloc[te])[:, 1])
         for tr, te in cv.split(X_train, y_train)
     ])
+    # cv_auc = mean of per-fold refit AUCs (matches notebook) — NOT the pooled-OOF AUC, which is
+    # already reported separately as oof_auc and is a different statistic.
+    dep_cv_auc = float(np.mean(cv_folds_all["LogReg_Firth"]))
     bakeoff_results = pd.concat([
         bakeoff_results,
         pd.DataFrame([{
@@ -1470,13 +1484,13 @@ def run(
     print("=" * 60)
     intercept, slope, brier = plot_calibration(y_train, dep_oof, plots_dir)
     print(f"  Calibration-in-the-large: {intercept:.3f}  |  slope: {slope:.3f}  |  Brier: {brier:.4f}")
-    plot_roc_curve(y_train, dep_oof, plots_dir)
+    plot_roc_curve(y_train, dep_oof, y_test, dep_test_pred, plots_dir)
 
     # ── 8. DCA ──
     print("=" * 60)
     print("8. Decision-curve analysis  (item 12e)")
     print("=" * 60)
-    plot_dca(y_train, dep_oof, plots_dir)
+    plot_dca(y_train, dep_oof, y_test, dep_test_pred, plots_dir)
     print("  DCA curve saved.")
 
     # ── 9. Bootstrap optimism ──

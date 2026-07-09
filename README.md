@@ -82,10 +82,12 @@ Edit `config.yaml` in the project root. Top-level keys control the full pipeline
 
 ## Usage
 
-> If the script hangs, xgboost may be probing CUDA. Set:
+> [!NOTE]
+> `bakeoff.main` sets `CUDA_VISIBLE_DEVICES=-1` automatically before xgboost is imported, so GPU-probing hangs shouldn't occur via the CLI. If you're importing `bakeoff.pipeline` directly in your own script, set it yourself first:
 > ```bash
 > export CUDA_VISIBLE_DEVICES=-1
 > ```
+> On macOS, xgboost may instead fail to *import* entirely (`libxgboost.dylib` / `libomp.dylib not loaded`) rather than hang — that's a missing OpenMP runtime, fixed with `brew install libomp`. The pipeline degrades gracefully either way (XGBoost is silently dropped from the bake-off), so a partial run isn't a bug, just an incomplete one.
 
 ### Run the full pipeline
 
@@ -144,9 +146,10 @@ The deployable pipeline fits plain Firth logistic regression first (for de-biase
 | `precision_recall_oof.png` | OOF precision-recall curves, all models |
 | `why_firth_panel.png` | Calibration / ROC / decision-curve panel — top-3 bake-off models + Firth |
 | `firth_k_sweep.png` | OOF AUC vs number of pre-specified predictors (parsimony sweep) |
-| `calibration_curve.png` | Firth LR calibration (10-bin quantile) |
-| `roc_curve.png` | Firth LR OOF ROC curve |
-| `dca_curve.png` | Decision-curve analysis |
+| `firth_loo.png` | Leave-one-out marginal contribution (Section 5d) |
+| `calibration_curve.png` | Firth LR calibration (10-bin quantile), fixed 2.5% axis matching the published figure |
+| `roc_curve.png` | Firth LR ROC — OOF (primary) + held-out test (confirmatory) overlay |
+| `dca_curve.png` | Decision-curve analysis — OOF (primary) + held-out test (confirmatory) overlay |
 | `deployable_observed_predicted_incidence_by_point_strata.png` / `.pdf` | Observed vs predicted incidence — 3 point-bin schemes × 3 cohorts (3×3 grid) |
 | `deployable_observed_predicted_incidence_7point_whole_cohort.png` / `.pdf` | Same, standalone 7-point scheme, whole cohort only |
 

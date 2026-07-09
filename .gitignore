@@ -3,6 +3,4 @@ __pycache__/
 *.pyc
 *.egg-info/
 data/for_score.csv
-output/*.csv
-output/*.png
 tripod_outputs/
