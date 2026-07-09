@@ -1216,8 +1216,8 @@ def run(
     # Build full preprocessor (for bake-off / benchmark)
     prep = build_full_preprocessor(binary, categorical, continuous)
     n_enc = prep.fit(X_train).transform(X_train.head(20)).shape[1]
-    events_total = int(y.sum())
-    print(f"  EPV (candidate pool) = {events_total}/{n_enc} = {events_total / max(n_enc, 1):.2f}")
+    events_train = int(y_train.sum())
+    print(f"  EPV (candidate pool) = {events_train}/{n_enc} = {events_train / max(n_enc, 1):.2f}")
 
     # Pre-specified predictors that exist in data
     ps_present = [c for c in pre_specified_predictors if c in X.columns]
@@ -1234,7 +1234,7 @@ def run(
     )
     n_enc_ps = prep_prespec.fit(X_train).transform(X_train.head(20)).shape[1]
     print(f"  Pre-specified predictors: {ps_present} -> {n_enc_ps} encoded df")
-    print(f"  EPV (deployable) = {events_total}/{n_enc_ps} = {events_total / max(n_enc_ps, 1):.1f}")
+    print(f"  EPV (deployable) = {events_train}/{n_enc_ps} = {events_train / max(n_enc_ps, 1):.1f}")
 
     deployable = Pipeline([
         ("prep", prep_prespec),
